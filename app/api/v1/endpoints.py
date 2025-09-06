@@ -175,7 +175,7 @@ def scan_delivery(
         if delivery.source_id not in route_warehouses and delivery.destination_id not in route_warehouses:
             raise HTTPException(status_code=403, detail="Delivery not in your route today")
 
-    # 3️⃣ Determine stage and counter
+    # 3️⃣ Determine stage and get/create counter
     stage = scan.stage
     counter = db.query(ScanCounter).filter(
         ScanCounter.delivery_id == delivery.id,
@@ -186,10 +186,19 @@ def scan_delivery(
         db.add(counter)
         db.flush()
 
-    if counter.total + scan.count > delivery.expected_packages:
-        raise HTTPException(status_code=400, detail="Cannot scan more packages than expected")
+    # 🚫 Prevent overscan across ALL stages
+    total_scanned = (
+        db.query(db.func.coalesce(db.func.sum(ScanCounter.total), 0))
+        .filter(ScanCounter.delivery_id == delivery.id)
+        .scalar()
+    )
+    if total_scanned + scan.count > delivery.expected_packages:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot scan more packages than expected"
+        )
 
-    # 4️⃣ Insert scan event
+    # 4️⃣ Insert scan event with correct warehouse_id
     if current_user.role == "manager":
         warehouse_id = current_user.warehouse_id
     elif stage == ScanStage.source_pick:
@@ -212,7 +221,7 @@ def scan_delivery(
     counter.total += scan.count
     db.add(counter)
 
-    # 6️⃣ Update delivery status if needed
+    # 6️⃣ Update delivery status if fully scanned
     if counter.total == delivery.expected_packages:
         if stage == ScanStage.source_pick:
             delivery.status = DeliveryStatus.picked
@@ -234,7 +243,7 @@ def scan_delivery(
     )
     db.add(log)
 
-    # 8️⃣ Commit all changes
+    # 8️⃣ Commit
     db.commit()
 
     return {
@@ -242,6 +251,7 @@ def scan_delivery(
         "delivery_status": delivery.status.value,
         "total_scanned": counter.total
     }
+
 
 
 # --------------------------
