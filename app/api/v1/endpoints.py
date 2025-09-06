@@ -121,8 +121,10 @@ def get_deliveries(
             "delivery_number": d.delivery_number,
             "status": d.status.value,
             "expected_packages": d.expected_packages,
-            "source": d.source.name if d.source else None,
-            "destination": d.destination.name if d.destination else None,
+            "source_id": d.source_id,
+            "destination_id": d.destination_id,
+            "source_name": d.source.name if d.source else None,
+            "destination_name": d.destination.name if d.destination else None,
             "scanned_packages": scanned,
         })
     return result
