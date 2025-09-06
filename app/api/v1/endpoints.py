@@ -190,11 +190,18 @@ def scan_delivery(
         raise HTTPException(status_code=400, detail="Cannot scan more packages than expected")
 
     # 4️⃣ Insert scan event
+    if current_user.role == "manager":
+        warehouse_id = current_user.warehouse_id
+    elif stage == ScanStage.source_pick:
+        warehouse_id = delivery.source_id
+    else:
+        warehouse_id = delivery.destination_id
+
     scan_event = ScanEvent(
         delivery_id=delivery.id,
         stage=stage,
         scanned_by=current_user.id,
-        warehouse_id=current_user.warehouse_id,
+        warehouse_id=warehouse_id,
         count=scan.count,
         client_device_id=client_device_id,
         client_ts=datetime.utcnow()
