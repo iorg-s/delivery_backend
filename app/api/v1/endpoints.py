@@ -1,10 +1,9 @@
-# app/api/v1/endpoints.py
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel
-from sqlalchemy.orm import joinedload
+from sqlalchemy import func
 
 from app.db import get_db
 from app.models import (
@@ -81,7 +80,6 @@ def get_driver_route(
     ]
 
 
-
 # --------------------------
 # Deliveries (with shop_ids filter)
 # --------------------------
@@ -146,6 +144,7 @@ def get_deliveries(
 
     return result
 
+
 # --------------------------
 # Delivery scanning
 # --------------------------
@@ -188,7 +187,7 @@ def scan_delivery(
 
     # 🚫 Prevent overscan across ALL stages
     total_scanned = (
-        db.query(db.func.coalesce(db.func.sum(ScanCounter.total), 0))
+        db.query(func.coalesce(func.sum(ScanCounter.total), 0))
         .filter(ScanCounter.delivery_id == delivery.id)
         .scalar()
     )
@@ -221,8 +220,9 @@ def scan_delivery(
     counter.total += scan.count
     db.add(counter)
 
-    # 6️⃣ Update delivery status if fully scanned
-    if counter.total == delivery.expected_packages:
+    # 6️⃣ Update delivery status if fully scanned (use total_scanned!)
+    new_total = total_scanned + scan.count
+    if new_total == delivery.expected_packages:
         if stage == ScanStage.source_pick:
             delivery.status = DeliveryStatus.picked
         elif stage == ScanStage.dest_arrival:
@@ -249,9 +249,8 @@ def scan_delivery(
     return {
         "message": "Scan recorded",
         "delivery_status": delivery.status.value,
-        "total_scanned": counter.total
+        "total_scanned": new_total
     }
-
 
 
 # --------------------------
@@ -295,6 +294,7 @@ def create_transfer(
     db.commit()
 
     return {"message": "Transfer created", "transfer_id": transfer_order.id}
+
 
 @router.get("/all_warehouses")
 def get_all_warehouses(db: Session = Depends(get_db)):
