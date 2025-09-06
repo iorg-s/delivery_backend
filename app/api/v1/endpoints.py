@@ -278,3 +278,9 @@ def create_transfer(
     db.commit()
 
     return {"message": "Transfer created", "transfer_id": transfer_order.id}
+
+@router.get("/all_warehouses")
+def get_all_warehouses(db: Session = Depends(get_db)):
+    """Return all warehouses, including main."""
+    warehouses = db.query(Warehouse).all()
+    return [{"id": w.id, "name": w.name, "is_main": w.is_main} for w in warehouses]
