@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel
+from sqlalchemy.orm import joinedload
 
 from app.db import get_db
 from app.models import (
@@ -96,10 +97,15 @@ def get_deliveries(
     # Main warehouse id
     main_id = db.query(Warehouse.id).filter(Warehouse.is_main == True).scalar()
 
-    q = db.query(Delivery)
+    q = (
+        db.query(Delivery)
+        .options(
+            joinedload(Delivery.source),
+            joinedload(Delivery.destination),
+        )
+    )
 
     # Build a destination-only filter:
-    #   destination in selected_shops  OR  destination == main
     dest_filter = None
     if ids:
         dest_filter = Delivery.destination_id.in_(ids)
@@ -116,6 +122,16 @@ def get_deliveries(
     result = []
     for d in deliveries:
         scanned = sum(c.total for c in d.scan_counters) if d.scan_counters else 0
+
+        # Safe source/destination name handling
+        source_name = None
+        if d.source:
+            source_name = "Petricani" if d.source.is_main else d.source.name
+
+        dest_name = None
+        if d.destination:
+            dest_name = "Petricani" if d.destination.is_main else d.destination.name
+
         result.append({
             "id": d.id,
             "delivery_number": d.delivery_number,
@@ -123,12 +139,12 @@ def get_deliveries(
             "expected_packages": d.expected_packages,
             "source_id": d.source_id,
             "destination_id": d.destination_id,
-            "source_name": d.source.name if d.source else "Unknown",
-            "destination_name": d.destination.name if d.destination else "Unknown",
+            "source_name": source_name or "Unknown",
+            "destination_name": dest_name or "Unknown",
             "scanned_packages": scanned,
         })
-    return result
 
+    return result
 
 # --------------------------
 # Delivery scanning
