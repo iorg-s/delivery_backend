@@ -123,8 +123,8 @@ def get_deliveries(
             "expected_packages": d.expected_packages,
             "source_id": d.source_id,
             "destination_id": d.destination_id,
-            "source_name": d.source.name if d.source else None,
-            "destination_name": d.destination.name if d.destination else None,
+            "source_name": d.source.name if d.source else "Unknown",
+            "destination_name": d.destination.name if d.destination else "Unknown",
             "scanned_packages": scanned,
         })
     return result
