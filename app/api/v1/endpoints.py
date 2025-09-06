@@ -185,11 +185,16 @@ def scan_delivery(
         db.add(counter)
         db.flush()
 
-    # ✅ Prevent overscan only within the current stage
-    if counter.total + scan.count > delivery.expected_packages:
+    # 🚫 Prevent overscan across ALL stages for this delivery
+    total_scanned = (
+        db.query(func.coalesce(func.sum(ScanCounter.total), 0))
+        .filter(ScanCounter.delivery_id == delivery.id)
+        .scalar()
+    )
+    if total_scanned + scan.count > delivery.expected_packages:
         raise HTTPException(
             status_code=400,
-            detail="Cannot scan more packages than expected in this stage"
+            detail=f"Cannot scan more than {delivery.expected_packages} packages for this delivery"
         )
 
     # 4️⃣ Insert scan event with correct warehouse_id
@@ -215,13 +220,9 @@ def scan_delivery(
     counter.total += scan.count
     db.add(counter)
 
-    # 6️⃣ Update delivery status if fully scanned (sum across all stages)
-    total_scanned = (
-        db.query(func.coalesce(func.sum(ScanCounter.total), 0))
-        .filter(ScanCounter.delivery_id == delivery.id)
-        .scalar()
-    )
-    if total_scanned == delivery.expected_packages:
+    # 6️⃣ Update delivery status if fully scanned
+    new_total = total_scanned + scan.count
+    if new_total == delivery.expected_packages:
         if stage == ScanStage.source_pick:
             delivery.status = DeliveryStatus.picked
         elif stage == ScanStage.dest_arrival:
@@ -248,7 +249,7 @@ def scan_delivery(
     return {
         "message": "Scan recorded",
         "delivery_status": delivery.status.value,
-        "total_scanned": total_scanned
+        "total_scanned": new_total
     }
 
 
