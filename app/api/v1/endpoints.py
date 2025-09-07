@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, date
 from typing import Optional, List
@@ -185,7 +185,14 @@ def scan_delivery(
         db.add(counter)
         db.flush()
 
-    # 🚫 Prevent overscan PER STAGE (driver & manager can both scan)
+    # 🚫 Calculate total scanned across all stages
+    total_scanned = (
+        db.query(func.coalesce(func.sum(ScanCounter.total), 0))
+        .filter(ScanCounter.delivery_id == delivery.id)
+        .scalar()
+    )
+
+    # 🚫 Prevent overscan per stage
     if counter.total + scan.count > delivery.expected_packages:
         raise HTTPException(
             status_code=400,
