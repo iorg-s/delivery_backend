@@ -188,9 +188,13 @@ def scan_delivery(
             raise HTTPException(status_code=400, detail="Delivery must be fully picked before arrival scan")
 
     if stage == ScanStage.dest_receive:
-        # Manager can only scan if it has arrived
-        if delivery.status != DeliveryStatus.arrived and delivery.status != DeliveryStatus.partial_receive:
-            raise HTTPException(status_code=400, detail="Delivery must arrive first")
+        # Manager can scan if driver fully picked OR if it has already arrived
+        if delivery.status not in [
+            DeliveryStatus.picked,
+            DeliveryStatus.arrived,
+            DeliveryStatus.partial_receive
+        ]:
+            raise HTTPException(status_code=400, detail="Delivery must be picked/arrived first")
 
     # 4️⃣ Determine stage and get/create counter
     counter = db.query(ScanCounter).filter(
