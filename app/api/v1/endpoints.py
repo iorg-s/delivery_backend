@@ -217,15 +217,22 @@ def scan_delivery(
     counter.total += scan.count
     db.add(counter)
 
-    # 6️⃣ Update delivery status
-    if counter.total == delivery.expected_packages:
-        if stage == ScanStage.source_pick:
+    # 6️⃣ Update delivery status (fixed)
+    if stage == ScanStage.source_pick:
+        if counter.total == delivery.expected_packages:
+            # ✅ Driver finished picking → mark as picked
             delivery.status = DeliveryStatus.picked
-        elif stage == ScanStage.dest_arrival:
+
+    elif stage == ScanStage.dest_arrival:
+        if counter.total == delivery.expected_packages:
             delivery.status = DeliveryStatus.arrived
-        elif stage == ScanStage.dest_receive:
+
+    elif stage == ScanStage.dest_receive:
+        if counter.total == delivery.expected_packages:
+            # ✅ Manager fully received → mark as received
             delivery.status = DeliveryStatus.received
-        db.add(delivery)
+
+    db.add(delivery)
 
     # 7️⃣ Audit log
     log = AuditLog(
@@ -251,8 +258,6 @@ def scan_delivery(
         "counters": counters,
         "expected_packages": delivery.expected_packages,
     }
-
-
 
 # --------------------------
 # Transfer
