@@ -26,6 +26,7 @@ class DeliveryStatus(enum.Enum):
     created = "created"
     ready_to_pick = "ready_to_pick"
     picked = "picked"
+    partial = "partial" 
     in_transit = "in_transit"
     arrived = "arrived"
     received = "received"

@@ -114,6 +114,10 @@ def get_deliveries(
     if dest_filter is not None:
         q = q.filter(dest_filter)
 
+    # 🚨 Drivers don’t see already received deliveries
+    if current_user.role == "driver":
+        q = q.filter(Delivery.status != DeliveryStatus.received)
+
     deliveries = q.all()
 
     # Build response with names + counters
@@ -176,14 +180,13 @@ def scan_delivery(
         if delivery.source_id not in route_warehouses and delivery.destination_id not in route_warehouses:
             raise HTTPException(status_code=403, detail="Delivery not in your route today")
 
-    # 3️⃣ Stage dependency validation ✅ FIXED
+    # 3️⃣ Stage dependency validation
     stage = scan.stage
-    if stage == ScanStage.dest_arrival and delivery.status != DeliveryStatus.picked:
+    if stage == ScanStage.dest_arrival and delivery.status not in [DeliveryStatus.picked, DeliveryStatus.partial_pick]:
         raise HTTPException(status_code=400, detail="Delivery must be picked first")
 
-    if stage == ScanStage.dest_receive and delivery.status not in [DeliveryStatus.arrived, DeliveryStatus.picked]:
+    if stage == ScanStage.dest_receive and delivery.status not in [DeliveryStatus.arrived, DeliveryStatus.picked, DeliveryStatus.partial_pick]:
         raise HTTPException(status_code=400, detail="Delivery must arrive (or at least be picked) first")
-
 
     # 4️⃣ Determine stage and get/create counter
     counter = db.query(ScanCounter).filter(
@@ -195,10 +198,8 @@ def scan_delivery(
         db.add(counter)
         db.flush()
 
-    # 🚫 Prevent overscan → now capped, no 400
-    new_total = counter.total + scan.count
-    if new_total > delivery.expected_packages:
-        new_total = delivery.expected_packages
+    # 🚫 Prevent overscan → capped
+    new_total = min(counter.total + scan.count, delivery.expected_packages)
 
     # 5️⃣ Insert scan event (log only real increment)
     increment = max(0, new_total - counter.total)
@@ -225,14 +226,20 @@ def scan_delivery(
     counter.total = new_total
     db.add(counter)
 
-    # 7️⃣ Update delivery status
-    if increment > 0:  # update status as soon as first scan happens
+    # 7️⃣ Update delivery status with partials
+    if increment > 0:
         if stage == ScanStage.source_pick:
-            delivery.status = DeliveryStatus.picked
+            if new_total < delivery.expected_packages:
+                delivery.status = DeliveryStatus.partial_pick
+            else:
+                delivery.status = DeliveryStatus.picked
         elif stage == ScanStage.dest_arrival:
             delivery.status = DeliveryStatus.arrived
         elif stage == ScanStage.dest_receive:
-            delivery.status = DeliveryStatus.received
+            if new_total < delivery.expected_packages:
+                delivery.status = DeliveryStatus.partial_receive
+            else:
+                delivery.status = DeliveryStatus.received
         db.add(delivery)
 
     # 8️⃣ Audit log
