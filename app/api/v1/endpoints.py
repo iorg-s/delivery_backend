@@ -185,14 +185,7 @@ def scan_delivery(
         db.add(counter)
         db.flush()
 
-    # 🚫 Calculate total scanned across all stages
-    total_scanned = (
-        db.query(func.coalesce(func.sum(ScanCounter.total), 0))
-        .filter(ScanCounter.delivery_id == delivery.id)
-        .scalar()
-    )
-
-    # 🚫 Prevent overscan per stage
+    # 🚫 Prevent overscan PER STAGE (not global)
     if counter.total + scan.count > delivery.expected_packages:
         raise HTTPException(
             status_code=400,
@@ -222,16 +215,15 @@ def scan_delivery(
     counter.total += scan.count
     db.add(counter)
 
-    # 6️⃣ Update delivery status if fully scanned
-    new_total = total_scanned + scan.count
-    if new_total == delivery.expected_packages:
+    # 6️⃣ Update delivery status when this stage is fully scanned
+    if counter.total == delivery.expected_packages:
         if stage == ScanStage.source_pick:
             delivery.status = DeliveryStatus.picked
         elif stage == ScanStage.dest_arrival:
             delivery.status = DeliveryStatus.arrived
         elif stage == ScanStage.dest_receive:
             delivery.status = DeliveryStatus.received
-    db.add(delivery)
+        db.add(delivery)
 
     # 7️⃣ Add audit log
     log = AuditLog(
@@ -251,7 +243,8 @@ def scan_delivery(
     return {
         "message": "Scan recorded",
         "delivery_status": delivery.status.value,
-        "total_scanned": new_total
+        "stage_scanned": counter.total,
+        "expected_packages": delivery.expected_packages
     }
 
 
