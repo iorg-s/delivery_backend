@@ -4,9 +4,9 @@ from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel
 from sqlalchemy import func
-import asyncio
+
 import os
-import httpx
+import requests  
 
 from app.db import get_db
 from app.models import (
@@ -20,77 +20,32 @@ router = APIRouter(prefix="/deliveries", tags=["deliveries"])
 
 # MOYSKLAD
 
-from app.db import get_db
-from app.models import (
-    Delivery, ScanEvent, ScanCounter, AuditLog, User,
-    ScanStage, DeliveryStatus, DriverRoute, Warehouse, TransferOrder
-)
-from app.auth import get_current_user
-from app.api.v1.schemas import ScanRequest, TransferCreate
-
-
 MOYSKLAD_TOKEN = os.getenv("MOYSKLAD_TOKEN")
 
-# Map your statuses to MoySklad state UUIDs
-STATE_MAP = {
-    "picked": "b1c03517-cd4b-11ed-0a80-0cdc000b3192",   # example from your JSON
-    "received": "5c6d6d27-87d9-11ee-0a80-11e70046d7f0", # example from your JSON
-}
-
-
-async def notify_moysklad(delivery_number: str, status: str):
-    """Update MoySklad move document state based on delivery status."""
+def notify_moysklad(delivery_id: str, status: str):
+    """Send status update to MoySklad"""
     if not MOYSKLAD_TOKEN:
-        print("[MoySklad] No token configured")
+        print("[MoySklad] No token configured, skipping update")
         return
 
-    state_uuid = STATE_MAP.get(status)
-    if not state_uuid:
-        print(f"[MoySklad] Unknown status: {status}")
-        return
-
+    url = "https://api.moysklad.ru/api/remap/1.2/entity/customerorder"
     headers = {
-        "Authorization": f"Bearer {MOYSKLAD_TOKEN}",
-        "Accept": "application/json;charset=utf-8",
-        "Content-Type": "application/json;charset=utf-8",
+        "Authorization": MOYSKLAD_TOKEN,
+        "Accept-Encoding": "gzip",
+        "Content-Type": "application/json",
     }
 
-    base_url = "https://api.moysklad.ru/api/remap/1.2"
+    payload = {
+        "delivery_id": delivery_id,
+        "status": status,
+    }
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            # 1. Find move by delivery number
-            search_url = f"{base_url}/entity/move?filter=name={delivery_number}"
-            resp = await client.get(search_url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-
-            if not data.get("rows"):
-                print(f"[MoySklad] Delivery {delivery_number} not found")
-                return
-
-            move = data["rows"][0]
-            move_id = move["id"]
-
-            # 2. Update move state
-            update_url = f"{base_url}/entity/move/{move_id}"
-            payload = {
-                "state": {
-                    "meta": {
-                        "href": f"{base_url}/entity/move/metadata/states/{state_uuid}",
-                        "type": "state",
-                        "mediaType": "application/json",
-                    }
-                }
-            }
-
-            put_resp = await client.put(update_url, headers=headers, json=payload)
-            put_resp.raise_for_status()
-
-            print(f"[MoySklad] Delivery {delivery_number} updated to {status}")
-
+        resp = requests.post(url, headers=headers, json=payload, timeout=10)
+        resp.raise_for_status()
+        print(f"[MoySklad] Updated delivery {delivery_id} -> {status}")
     except Exception as e:
-        print(f"[MoySklad] Failed: {e}")
+        print(f"[MoySklad] Failed to update {delivery_id}: {e}")
 
 # --------------------------
 # Multi-shop selection
