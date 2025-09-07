@@ -24,13 +24,14 @@ class ScanStage(enum.Enum):
 
 class DeliveryStatus(enum.Enum):
     created = "created"
-    ready_to_pick = "ready_to_pick"
-    picked = "picked"
-    partial = "partial" 
-    in_transit = "in_transit"
-    arrived = "arrived"
-    received = "received"
+    partial_pick = "partial_pick"   # driver scanned some
+    picked = "picked"               # driver scanned all
+    in_transit = "in_transit"       # (optional, if you use it)
+    arrived = "arrived"             # reached destination
+    partial_receive = "partial_receive"  # manager scanned some
+    received = "received"           # manager scanned all
     redirected = "redirected"
+
 
 
 def gen_uuid():
