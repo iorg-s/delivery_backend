@@ -150,6 +150,63 @@ def get_deliveries(
 
     return result
 
+# --------------------------
+# Delivery creation
+# --------------------------
+class DeliveryCreate(BaseModel):
+    destination_id: str
+    expected_packages: int
+
+
+@router.post("")
+def create_delivery(
+    payload: DeliveryCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=403, detail="Only managers can create deliveries")
+
+    # Manager’s own warehouse is always the source
+    if not current_user.warehouse_id:
+        raise HTTPException(status_code=400, detail="Manager has no warehouse assigned")
+
+    delivery = Delivery(
+        id=func.gen_random_uuid(),                  # ✅ gen_random_uuid()
+        delivery_number=str(func.gen_random_uuid()),# can replace with your numbering logic
+        status=DeliveryStatus.created,              # ✅ created
+        expected_packages=payload.expected_packages,
+        source_id=current_user.warehouse_id,
+        destination_id=payload.destination_id,
+        created=datetime.utcnow(),
+    )
+    db.add(delivery)
+
+    log = AuditLog(
+        actor_id=current_user.id,
+        event_type="delivery_created",
+        delivery_id=delivery.id,
+        details={
+            "source": current_user.warehouse_id,
+            "destination": payload.destination_id,
+            "expected_packages": payload.expected_packages,
+        },
+    )
+    db.add(log)
+
+    db.commit()
+    db.refresh(delivery)
+
+    return {
+        "id": delivery.id,
+        "delivery_number": delivery.delivery_number,
+        "status": delivery.status.value,
+        "expected_packages": delivery.expected_packages,
+        "source_id": delivery.source_id,
+        "destination_id": delivery.destination_id,
+        "created": delivery.created.isoformat(),
+    }
+
 
 # --------------------------
 # Delivery scanning
