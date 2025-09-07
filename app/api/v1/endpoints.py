@@ -147,7 +147,6 @@ def get_deliveries(
     return result
 
 
-# --------------------------
 # Delivery scanning
 # --------------------------
 @router.post("/scan")
@@ -187,59 +186,53 @@ def scan_delivery(
         db.add(counter)
         db.flush()
 
-    # 🚫 Prevent overscan PER STAGE
-    if counter.total + scan.count > delivery.expected_packages:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot scan more than {delivery.expected_packages} packages at stage {stage.value}"
+    # 🚫 Prevent overscan → now capped, no 400
+    new_total = counter.total + scan.count
+    if new_total > delivery.expected_packages:
+        # cap at expected_packages
+        new_total = delivery.expected_packages
+
+    # 4️⃣ Insert scan event (log only real increment)
+    increment = max(0, new_total - counter.total)
+    if increment > 0:
+        if current_user.role == "manager":
+            warehouse_id = current_user.warehouse_id
+        elif stage == ScanStage.source_pick:
+            warehouse_id = delivery.source_id
+        else:
+            warehouse_id = delivery.destination_id
+
+        scan_event = ScanEvent(
+            delivery_id=delivery.id,
+            stage=stage,
+            scanned_by=current_user.id,
+            warehouse_id=warehouse_id,
+            count=increment,
+            client_device_id=client_device_id,
+            client_ts=datetime.utcnow()
         )
-
-    # 4️⃣ Insert scan event
-    if current_user.role == "manager":
-        warehouse_id = current_user.warehouse_id
-    elif stage == ScanStage.source_pick:
-        warehouse_id = delivery.source_id
-    else:
-        warehouse_id = delivery.destination_id
-
-    scan_event = ScanEvent(
-        delivery_id=delivery.id,
-        stage=stage,
-        scanned_by=current_user.id,
-        warehouse_id=warehouse_id,
-        count=scan.count,
-        client_device_id=client_device_id,
-        client_ts=datetime.utcnow()
-    )
-    db.add(scan_event)
+        db.add(scan_event)
 
     # 5️⃣ Update scan counter
-    counter.total += scan.count
+    counter.total = new_total
     db.add(counter)
 
-    # 6️⃣ Update delivery status (fixed)
-    if stage == ScanStage.source_pick:
-        if counter.total == delivery.expected_packages:
-            # ✅ Driver finished picking → mark as picked
+    # 6️⃣ Update delivery status
+    if counter.total == delivery.expected_packages:
+        if stage == ScanStage.source_pick:
             delivery.status = DeliveryStatus.picked
-
-    elif stage == ScanStage.dest_arrival:
-        if counter.total == delivery.expected_packages:
+        elif stage == ScanStage.dest_arrival:
             delivery.status = DeliveryStatus.arrived
-
-    elif stage == ScanStage.dest_receive:
-        if counter.total == delivery.expected_packages:
-            # ✅ Manager fully received → mark as received
+        elif stage == ScanStage.dest_receive:
             delivery.status = DeliveryStatus.received
-
-    db.add(delivery)
+        db.add(delivery)
 
     # 7️⃣ Audit log
     log = AuditLog(
         actor_id=current_user.id,
         event_type="scan",
         delivery_id=delivery.id,
-        details={"stage": stage.value, "count": scan.count}
+        details={"stage": stage.value, "count": increment}
     )
     db.add(log)
 
