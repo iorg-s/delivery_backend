@@ -217,8 +217,8 @@ def scan_delivery(
     counter.total = new_total
     db.add(counter)
 
-    # 6️⃣ Update delivery status
-    if counter.total == delivery.expected_packages:
+    # 6️⃣ Update delivery status ✅ FIXED
+    if increment > 0:  # update status as soon as first scan happens
         if stage == ScanStage.source_pick:
             delivery.status = DeliveryStatus.picked
         elif stage == ScanStage.dest_arrival:
@@ -251,6 +251,7 @@ def scan_delivery(
         "counters": counters,
         "expected_packages": delivery.expected_packages,
     }
+
 
 # --------------------------
 # Transfer

@@ -1,16 +1,13 @@
 # app/api/v1/schemas.py
 from pydantic import BaseModel
-from enum import Enum
+from app.models import ScanStage  # ✅ reuse the real enum from models
 
-class ScanStage(str, Enum):
-    source_pick = "source_pick"
-    dest_arrival = "dest_arrival"
-    dest_receive = "dest_receive"
 
 class ScanRequest(BaseModel):
     delivery_number: str
     count: int
-    stage: ScanStage
+    stage: ScanStage   # ✅ now uses the same Enum as DB/models
+
 
 class TransferCreate(BaseModel):
     delivery_number: str
