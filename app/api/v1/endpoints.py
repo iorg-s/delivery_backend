@@ -185,14 +185,14 @@ def scan_delivery(
         db.add(counter)
         db.flush()
 
-    # 🚫 Prevent overscan PER STAGE (not global)
+    # 🚫 Prevent overscan PER STAGE
     if counter.total + scan.count > delivery.expected_packages:
         raise HTTPException(
             status_code=400,
             detail=f"Cannot scan more than {delivery.expected_packages} packages at stage {stage.value}"
         )
 
-    # 4️⃣ Insert scan event with correct warehouse_id
+    # 4️⃣ Insert scan event
     if current_user.role == "manager":
         warehouse_id = current_user.warehouse_id
     elif stage == ScanStage.source_pick:
@@ -215,7 +215,7 @@ def scan_delivery(
     counter.total += scan.count
     db.add(counter)
 
-    # 6️⃣ Update delivery status when this stage is fully scanned
+    # 6️⃣ Update delivery status
     if counter.total == delivery.expected_packages:
         if stage == ScanStage.source_pick:
             delivery.status = DeliveryStatus.picked
@@ -225,31 +225,31 @@ def scan_delivery(
             delivery.status = DeliveryStatus.received
         db.add(delivery)
 
-    # 7️⃣ Add audit log
+    # 7️⃣ Audit log
     log = AuditLog(
         actor_id=current_user.id,
         event_type="scan",
         delivery_id=delivery.id,
-        details={
-            "stage": stage.value,
-            "count": scan.count
-        }
+        details={"stage": stage.value, "count": scan.count}
     )
     db.add(log)
 
     # 8️⃣ Commit
     db.commit()
 
-    return {
-    "message": "Scan recorded",
-    "delivery_status": delivery.status.value,
-    "stage_scanned": counter.total,
-    "expected_packages": delivery.expected_packages,
-    "total_scanned": db.query(ScanEvent)
-        .filter(ScanEvent.delivery_id == delivery.id)
-        .with_entities(func.sum(ScanEvent.count))
-        .scalar() or 0
+    # 9️⃣ Collect counters per stage for response
+    counters = {
+        c.stage.value: c.total
+        for c in db.query(ScanCounter).filter(ScanCounter.delivery_id == delivery.id).all()
     }
+
+    return {
+        "message": "Scan recorded",
+        "delivery_status": delivery.status.value,
+        "counters": counters,
+        "expected_packages": delivery.expected_packages,
+    }
+
 
 
 # --------------------------
