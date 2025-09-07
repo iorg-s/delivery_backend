@@ -182,11 +182,15 @@ def scan_delivery(
 
     # 3️⃣ Stage dependency validation
     stage = scan.stage
-    if stage == ScanStage.dest_arrival and delivery.status not in [DeliveryStatus.picked, DeliveryStatus.partial_pick]:
-        raise HTTPException(status_code=400, detail="Delivery must be picked first")
+    if stage == ScanStage.dest_arrival:
+        # Manager can only scan if driver fully picked
+        if delivery.status != DeliveryStatus.picked:
+            raise HTTPException(status_code=400, detail="Delivery must be fully picked before arrival scan")
 
-    if stage == ScanStage.dest_receive and delivery.status not in [DeliveryStatus.arrived, DeliveryStatus.picked, DeliveryStatus.partial_pick]:
-        raise HTTPException(status_code=400, detail="Delivery must arrive (or at least be picked) first")
+    if stage == ScanStage.dest_receive:
+        # Manager can only scan if it has arrived
+        if delivery.status != DeliveryStatus.arrived and delivery.status != DeliveryStatus.partial_receive:
+            raise HTTPException(status_code=400, detail="Delivery must arrive first")
 
     # 4️⃣ Determine stage and get/create counter
     counter = db.query(ScanCounter).filter(
@@ -266,7 +270,6 @@ def scan_delivery(
         "counters": counters,
         "expected_packages": delivery.expected_packages,
     }
-
 
 # --------------------------
 # Transfer
