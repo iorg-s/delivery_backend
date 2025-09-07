@@ -139,7 +139,9 @@ def get_deliveries(
             "destination_id": d.destination_id,
             "source_name": source_name or "Unknown",
             "destination_name": dest_name or "Unknown",
-            "scanned_packages": scanned,
+            "counters": {
+                c.stage.value: c.total for c in d.scan_counters
+            }
         })
 
     return result
