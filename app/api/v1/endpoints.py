@@ -176,12 +176,14 @@ def scan_delivery(
         if delivery.source_id not in route_warehouses and delivery.destination_id not in route_warehouses:
             raise HTTPException(status_code=403, detail="Delivery not in your route today")
 
-    # 3️⃣ Stage dependency validation ✅ NEW
+    # 3️⃣ Stage dependency validation ✅ FIXED
     stage = scan.stage
     if stage == ScanStage.dest_arrival and delivery.status != DeliveryStatus.picked:
         raise HTTPException(status_code=400, detail="Delivery must be picked first")
-    if stage == ScanStage.dest_receive and delivery.status != DeliveryStatus.arrived:
-        raise HTTPException(status_code=400, detail="Delivery must arrive first")
+
+    if stage == ScanStage.dest_receive and delivery.status not in [DeliveryStatus.arrived, DeliveryStatus.picked]:
+        raise HTTPException(status_code=400, detail="Delivery must arrive (or at least be picked) first")
+
 
     # 4️⃣ Determine stage and get/create counter
     counter = db.query(ScanCounter).filter(
