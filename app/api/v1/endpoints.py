@@ -330,7 +330,7 @@ def scan_delivery(
             else:
                 delivery.status = DeliveryStatus.picked
                 # 🔔 Notify MoySklad when fully picked
-                notify_moysklad(delivery.delivery_number, "picked")
+                # notify_moysklad(delivery.delivery_number, "picked")
 
         elif stage == ScanStage.dest_arrival:
             delivery.status = DeliveryStatus.arrived
@@ -341,7 +341,7 @@ def scan_delivery(
             else:
                 delivery.status = DeliveryStatus.received
                 # 🔔 Notify MoySklad when fully received
-                notify_moysklad(delivery.delivery_number, "received")
+                # notify_moysklad(delivery.delivery_number, "received")
 
         db.add(delivery)
 
