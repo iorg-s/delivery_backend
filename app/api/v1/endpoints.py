@@ -241,10 +241,14 @@ def scan_delivery(
     db.commit()
 
     return {
-        "message": "Scan recorded",
-        "delivery_status": delivery.status.value,
-        "stage_scanned": counter.total,
-        "expected_packages": delivery.expected_packages
+    "message": "Scan recorded",
+    "delivery_status": delivery.status.value,
+    "stage_scanned": counter.total,
+    "expected_packages": delivery.expected_packages,
+    "total_scanned": db.query(ScanEvent)
+        .filter(ScanEvent.delivery_id == delivery.id)
+        .with_entities(func.sum(ScanEvent.count))
+        .scalar() or 0
     }
 
 
