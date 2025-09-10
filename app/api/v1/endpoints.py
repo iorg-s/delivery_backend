@@ -8,10 +8,11 @@ from sqlalchemy import func
 import os
 import requests  
 
+
 from app.db import get_db
 from app.models import (
     Delivery, ScanEvent, ScanCounter, AuditLog, User,
-    ScanStage, DeliveryStatus, DriverRoute, Warehouse, TransferOrder
+    ScanStage, DeliveryStatus, DriverRoute, Warehouse, TransferOrder, UserRole
 )
 from app.auth import get_current_user
 from app.api.v1.schemas import ScanRequest, TransferCreate
@@ -196,7 +197,7 @@ def create_delivery(
     current_user: User = Depends(get_current_user),
 ):
     # Only managers can create deliveries
-    if current_user.role != "manager":
+    if current_user.role not in (UserRole.manager, UserRole.supervisor):
         raise HTTPException(status_code=403, detail="Only managers can create deliveries")
 
     # Manager must have a warehouse assigned
