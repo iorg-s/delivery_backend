@@ -117,6 +117,9 @@ def get_driver_route(
 # --------------------------
 # Deliveries (with shop_ids filter)
 # --------------------------
+# --------------------------
+# Deliveries (with shop_ids filter)
+# --------------------------
 @router.get("")
 def get_deliveries(
     shop_ids: Optional[str] = None,
