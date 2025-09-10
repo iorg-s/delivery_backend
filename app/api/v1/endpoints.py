@@ -117,9 +117,6 @@ def get_driver_route(
 # --------------------------
 # Deliveries (with shop_ids filter)
 # --------------------------
-# --------------------------
-# Deliveries (with shop_ids filter)
-# --------------------------
 @router.get("")
 def get_deliveries(
     shop_ids: Optional[str] = None,
@@ -141,12 +138,30 @@ def get_deliveries(
     )
 
     # -------------------------
-    # ✅ Fix: include source OR destination
+    # Filter deliveries for current user's warehouse (for managers)
     # -------------------------
-    filter_ids = ids.copy()  # selected shops
-    if main_id:
-        filter_ids.append(str(main_id))  # include main warehouse
+    filter_ids = ids.copy()
+    
+    if current_user.role in (UserRole.manager, UserRole.supervisor):
+        # Only show deliveries related to their warehouse
+        filter_ids = [str(current_user.warehouse_id)]
 
+    elif current_user.role == "driver":
+        # Drivers: filter by route + exclude received
+        today = date.today()
+        route_warehouses = db.query(DriverRoute.warehouse_id).filter(
+            DriverRoute.driver_id == current_user.id,
+            DriverRoute.route_date == today
+        ).all()
+        route_ids = [str(r[0]) for r in route_warehouses]
+        filter_ids = route_ids
+        q = q.filter(Delivery.status != DeliveryStatus.received)
+
+    # Include main warehouse in filter (if you want)
+    if main_id and str(main_id) not in filter_ids:
+        filter_ids.append(str(main_id))
+
+    # Apply filter
     if filter_ids:
         q = q.filter(
             or_(
@@ -155,26 +170,11 @@ def get_deliveries(
             )
         )
 
-    # 🚨 Drivers don’t see already received deliveries
-    if current_user.role == "driver":
-        q = q.filter(Delivery.status != DeliveryStatus.received)
-
     deliveries = q.all()
 
-    # Build response with names + counters
+    # Build response
     result = []
     for d in deliveries:
-        scanned = sum(c.total for c in d.scan_counters) if d.scan_counters else 0
-
-        # Safe source/destination name handling
-        source_name = None
-        if d.source:
-            source_name = "Petricani" if d.source.is_main else d.source.name
-
-        dest_name = None
-        if d.destination:
-            dest_name = "Petricani" if d.destination.is_main else d.destination.name
-
         result.append({
             "id": d.id,
             "delivery_number": d.delivery_number,
@@ -182,11 +182,9 @@ def get_deliveries(
             "expected_packages": d.expected_packages,
             "source_id": d.source_id,
             "destination_id": d.destination_id,
-            "source_name": source_name or "Unknown",
-            "destination_name": dest_name or "Unknown",
-            "counters": {
-                c.stage.value: c.total for c in d.scan_counters
-            }
+            "source_name": "Petricani" if d.source and d.source.is_main else (d.source.name if d.source else "Unknown"),
+            "destination_name": "Petricani" if d.destination and d.destination.is_main else (d.destination.name if d.destination else "Unknown"),
+            "counters": {c.stage.value: c.total for c in d.scan_counters} if d.scan_counters else {}
         })
 
     return result
