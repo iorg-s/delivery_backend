@@ -217,7 +217,6 @@ def create_delivery(
         expected_packages=payload.expected_packages,
         source_id=current_user.warehouse_id,
         destination_id=payload.destination_id,
-        created=datetime.utcnow(),
     )
     db.add(delivery)
 
