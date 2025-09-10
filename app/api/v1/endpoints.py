@@ -336,15 +336,16 @@ def scan_delivery(
             delivery.status = DeliveryStatus.arrived
 
         elif stage == ScanStage.dest_receive:
-            if new_total < delivery.expected_packages:
-                delivery.status = DeliveryStatus.partial_receive
-            else:
+            # ✅ FIX: Only mark fully received when ALL packages are scanned,
+            # otherwise keep it in partial_receive
+            if new_total >= delivery.expected_packages:
                 delivery.status = DeliveryStatus.received
                 # 🔔 Notify MoySklad when fully received
                 # notify_moysklad(delivery.delivery_number, "received")
+            else:
+                delivery.status = DeliveryStatus.partial_receive
 
         db.add(delivery)
-
 
     # 8️⃣ Audit log
     log = AuditLog(
