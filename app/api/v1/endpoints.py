@@ -221,7 +221,8 @@ def create_delivery(
         destination_id=payload.destination_id,
     )
     db.add(delivery)
-
+    db.flush()  # ensures delivery is inserted and ID exists in DB
+    
     # Audit log
     log = AuditLog(
         actor_id=current_user.id,
