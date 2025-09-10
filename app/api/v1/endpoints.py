@@ -117,6 +117,9 @@ def get_driver_route(
 # --------------------------
 # Deliveries (with shop_ids filter)
 # --------------------------
+# --------------------------
+# Deliveries (with shop_ids filter)
+# --------------------------
 @router.get("")
 def get_deliveries(
     shop_ids: Optional[str] = None,
@@ -126,42 +129,24 @@ def get_deliveries(
     # Parse selected shop IDs from query
     ids = [s for s in (shop_ids or "").split(",") if s]
 
-    # Main warehouse id
-    main_id = db.query(Warehouse.id).filter(Warehouse.is_main == True).scalar()
-
-    q = (
-        db.query(Delivery)
-        .options(
-            joinedload(Delivery.source),
-            joinedload(Delivery.destination),
-        )
+    q = db.query(Delivery).options(
+        joinedload(Delivery.source),
+        joinedload(Delivery.destination),
     )
 
     # -------------------------
-    # Filter deliveries for current user's warehouse (for managers)
+    # ✅ Filter based on role
     # -------------------------
-    filter_ids = ids.copy()
-    
-    if current_user.role in (UserRole.manager, UserRole.supervisor):
-        # Only show deliveries related to their warehouse
+    if current_user.role in ("manager", "supervisor"):
+        # Managers see only deliveries related to their warehouse
         filter_ids = [str(current_user.warehouse_id)]
+    elif ids:
+        # Drivers or if shop_ids explicitly provided
+        filter_ids = ids
+    else:
+        # No filter, return all
+        filter_ids = []
 
-    elif current_user.role == "driver":
-        # Drivers: filter by route + exclude received
-        today = date.today()
-        route_warehouses = db.query(DriverRoute.warehouse_id).filter(
-            DriverRoute.driver_id == current_user.id,
-            DriverRoute.route_date == today
-        ).all()
-        route_ids = [str(r[0]) for r in route_warehouses]
-        filter_ids = route_ids
-        q = q.filter(Delivery.status != DeliveryStatus.received)
-
-    # Include main warehouse in filter (if you want)
-    if main_id and str(main_id) not in filter_ids:
-        filter_ids.append(str(main_id))
-
-    # Apply filter
     if filter_ids:
         q = q.filter(
             or_(
@@ -170,11 +155,20 @@ def get_deliveries(
             )
         )
 
+    # Drivers don’t see already received deliveries
+    if current_user.role == "driver":
+        q = q.filter(Delivery.status != DeliveryStatus.received)
+
     deliveries = q.all()
 
-    # Build response
+    # Build response with names + counters
     result = []
     for d in deliveries:
+        scanned = sum(c.total for c in d.scan_counters) if d.scan_counters else 0
+
+        source_name = "Petricani" if d.source and d.source.is_main else (d.source.name if d.source else "Unknown")
+        dest_name = "Petricani" if d.destination and d.destination.is_main else (d.destination.name if d.destination else "Unknown")
+
         result.append({
             "id": d.id,
             "delivery_number": d.delivery_number,
@@ -182,12 +176,14 @@ def get_deliveries(
             "expected_packages": d.expected_packages,
             "source_id": d.source_id,
             "destination_id": d.destination_id,
-            "source_name": "Petricani" if d.source and d.source.is_main else (d.source.name if d.source else "Unknown"),
-            "destination_name": "Petricani" if d.destination and d.destination.is_main else (d.destination.name if d.destination else "Unknown"),
-            "counters": {c.stage.value: c.total for c in d.scan_counters} if d.scan_counters else {}
+            "source_name": source_name,
+            "destination_name": dest_name,
+            "counters": {c.stage.value: c.total for c in d.scan_counters} if d.scan_counters else {},
         })
 
     return result
+# --------------------------
+
 # --------------------------
 # Delivery creation (accept delivery_number from app)
 # --------------------------
