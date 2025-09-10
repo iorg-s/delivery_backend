@@ -182,12 +182,12 @@ def get_deliveries(
     return result
 
 # --------------------------
-# Delivery creation
+# Delivery creation (accept delivery_number from app)
 # --------------------------
 class DeliveryCreate(BaseModel):
     destination_id: str
     expected_packages: int
-
+    delivery_number: str = Field(..., description="Scanned delivery number from the app")
 
 @router.post("")
 def create_delivery(
@@ -195,17 +195,24 @@ def create_delivery(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Only managers can create deliveries
     if current_user.role != "manager":
         raise HTTPException(status_code=403, detail="Only managers can create deliveries")
 
-    # Manager’s own warehouse is always the source
+    # Manager must have a warehouse assigned
     if not current_user.warehouse_id:
         raise HTTPException(status_code=400, detail="Manager has no warehouse assigned")
 
+    # Check if delivery with this number already exists
+    existing = db.query(Delivery).filter(Delivery.delivery_number == payload.delivery_number).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Delivery number already exists")
+
+    # Create delivery using scanned number
     delivery = Delivery(
-        id=func.gen_random_uuid(),                  # ✅ gen_random_uuid()
-        delivery_number=str(func.gen_random_uuid()),# can replace with your numbering logic
-        status=DeliveryStatus.created,              # ✅ created
+        id=func.gen_random_uuid(),
+        delivery_number=payload.delivery_number,
+        status=DeliveryStatus.created,
         expected_packages=payload.expected_packages,
         source_id=current_user.warehouse_id,
         destination_id=payload.destination_id,
@@ -213,6 +220,7 @@ def create_delivery(
     )
     db.add(delivery)
 
+    # Audit log
     log = AuditLog(
         actor_id=current_user.id,
         event_type="delivery_created",
@@ -237,8 +245,6 @@ def create_delivery(
         "destination_id": delivery.destination_id,
         "created": delivery.created.isoformat(),
     }
-
-
 # --------------------------
 # Delivery scanning
 # --------------------------
