@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 import uuid
 
@@ -137,16 +137,20 @@ def get_deliveries(
         )
     )
 
-    # Build a destination-only filter:
-    dest_filter = None
-    if ids:
-        dest_filter = Delivery.destination_id.in_(ids)
+    # -------------------------
+    # ✅ Fix: include source OR destination
+    # -------------------------
+    filter_ids = ids.copy()  # selected shops
     if main_id:
-        main_dest = (Delivery.destination_id == main_id)
-        dest_filter = main_dest if dest_filter is None else (dest_filter | main_dest)
+        filter_ids.append(str(main_id))  # include main warehouse
 
-    if dest_filter is not None:
-        q = q.filter(dest_filter)
+    if filter_ids:
+        q = q.filter(
+            or_(
+                Delivery.destination_id.in_(filter_ids),
+                Delivery.source_id.in_(filter_ids)
+            )
+        )
 
     # 🚨 Drivers don’t see already received deliveries
     if current_user.role == "driver":
@@ -183,7 +187,6 @@ def get_deliveries(
         })
 
     return result
-
 # --------------------------
 # Delivery creation (accept delivery_number from app)
 # --------------------------
@@ -222,7 +225,7 @@ def create_delivery(
     )
     db.add(delivery)
     db.flush()  # ensures delivery is inserted and ID exists in DB
-    
+
     # Audit log
     log = AuditLog(
         actor_id=current_user.id,
