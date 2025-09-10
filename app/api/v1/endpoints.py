@@ -5,6 +5,8 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 
+import uuid
+
 import os
 import requests  
 
@@ -211,7 +213,7 @@ def create_delivery(
 
     # Create delivery using scanned number
     delivery = Delivery(
-        id=func.gen_random_uuid(),
+        id=str(uuid.uuid4()),  # <- Python UUID
         delivery_number=payload.delivery_number,
         status=DeliveryStatus.created,
         expected_packages=payload.expected_packages,
@@ -243,7 +245,7 @@ def create_delivery(
         "expected_packages": delivery.expected_packages,
         "source_id": delivery.source_id,
         "destination_id": delivery.destination_id,
-        "created": delivery.created.isoformat(),
+        "created": delivery.created_at.isoformat(),
     }
 # --------------------------
 # Delivery scanning
