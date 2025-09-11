@@ -4,12 +4,9 @@ from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
-
 import uuid
-
 import os
 import requests  
-
 
 from app.db import get_db
 from app.models import (
@@ -21,34 +18,64 @@ from app.api.v1.schemas import ScanRequest, TransferCreate
 
 router = APIRouter(prefix="/deliveries", tags=["deliveries"])
 
+# ==================================
 # MOYSKLAD
+# ==================================
 
 MOYSKLAD_TOKEN = os.getenv("MOYSKLAD_TOKEN")
 
-def notify_moysklad(delivery_id: str, status: str):
-    """Send status update to MoySklad"""
+def notify_moysklad(delivery_number: str, status: str):
+    """Find move by delivery_number (name) and update its state"""
     if not MOYSKLAD_TOKEN:
         print("[MoySklad] No token configured, skipping update")
         return
 
-    url = "https://api.moysklad.ru/api/remap/1.2/entity/customerorder"
     headers = {
-        "Authorization": MOYSKLAD_TOKEN,
-        "Accept-Encoding": "gzip",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "delivery_id": delivery_id,
-        "status": status,
+        "Authorization": f"Bearer {MOYSKLAD_TOKEN}",
+        "Accept": "application/json;charset=utf-8",
+        "Content-Type": "application/json;charset=utf-8",
     }
 
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=10)
-        resp.raise_for_status()
-        print(f"[MoySklad] Updated delivery {delivery_id} -> {status}")
+        # 1️⃣ Find move by name (delivery number)
+        search_url = f"https://api.moysklad.ru/api/remap/1.2/entity/move?filter=name={delivery_number}"
+        search_resp = requests.get(search_url, headers=headers, timeout=10)
+        search_resp.raise_for_status()
+        data = search_resp.json()
+
+        if not data.get("rows"):
+            print(f"[MoySklad] No document found for delivery_number={delivery_number}")
+            return
+
+        move_id = data["rows"][0]["id"]
+
+        # 2️⃣ Choose state based on status
+        if status == "picked":
+            state_id = "b1c03517-cd4b-11ed-0a80-0cdc000b3192"
+        elif status == "received":
+            state_id = "5c6d6d27-87d9-11ee-0a80-11e70046d7f0"
+        else:
+            print(f"[MoySklad] Unknown status {status}, skipping")
+            return
+
+        # 3️⃣ Update state
+        update_url = f"https://api.moysklad.ru/api/remap/1.2/entity/move/{move_id}"
+        payload = {
+            "state": {
+                "meta": {
+                    "href": f"https://api.moysklad.ru/api/remap/1.2/entity/move/metadata/states/{state_id}",
+                    "type": "state",
+                    "mediaType": "application/json"
+                }
+            }
+        }
+
+        update_resp = requests.put(update_url, headers=headers, json=payload, timeout=10)
+        update_resp.raise_for_status()
+        print(f"[MoySklad] Updated delivery {delivery_number} -> {status}")
+
     except Exception as e:
-        print(f"[MoySklad] Failed to update {delivery_id}: {e}")
+        print(f"[MoySklad] Failed to update {delivery_number}: {e}")
 
 # --------------------------
 # Multi-shop selection
@@ -117,16 +144,12 @@ def get_driver_route(
 # --------------------------
 # Deliveries (with shop_ids filter)
 # --------------------------
-# --------------------------
-# Deliveries (with shop_ids filter)
-# --------------------------
 @router.get("")
 def get_deliveries(
     shop_ids: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Parse selected shop IDs from query
     ids = [s for s in (shop_ids or "").split(",") if s]
 
     q = db.query(Delivery).options(
@@ -134,17 +157,11 @@ def get_deliveries(
         joinedload(Delivery.destination),
     )
 
-    # -------------------------
-    # ✅ Filter based on role
-    # -------------------------
     if current_user.role in ("manager", "supervisor"):
-        # Managers see only deliveries related to their warehouse
         filter_ids = [str(current_user.warehouse_id)]
     elif ids:
-        # Drivers or if shop_ids explicitly provided
         filter_ids = ids
     else:
-        # No filter, return all
         filter_ids = []
 
     if filter_ids:
@@ -155,17 +172,14 @@ def get_deliveries(
             )
         )
 
-    # Drivers don’t see already received deliveries
     if current_user.role == "driver":
         q = q.filter(Delivery.status != DeliveryStatus.received)
 
     deliveries = q.all()
 
-    # Build response with names + counters
     result = []
     for d in deliveries:
         scanned = sum(c.total for c in d.scan_counters) if d.scan_counters else 0
-
         source_name = "Petricani" if d.source and d.source.is_main else (d.source.name if d.source else "Unknown")
         dest_name = "Petricani" if d.destination and d.destination.is_main else (d.destination.name if d.destination else "Unknown")
 
@@ -182,10 +196,9 @@ def get_deliveries(
         })
 
     return result
-# --------------------------
 
 # --------------------------
-# Delivery creation (accept delivery_number from app)
+# Delivery creation
 # --------------------------
 class DeliveryCreate(BaseModel):
     destination_id: str
@@ -198,22 +211,18 @@ def create_delivery(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Only managers can create deliveries
     if current_user.role not in (UserRole.manager, UserRole.supervisor):
         raise HTTPException(status_code=403, detail="Only managers can create deliveries")
 
-    # Manager must have a warehouse assigned
     if not current_user.warehouse_id:
         raise HTTPException(status_code=400, detail="Manager has no warehouse assigned")
 
-    # Check if delivery with this number already exists
     existing = db.query(Delivery).filter(Delivery.delivery_number == payload.delivery_number).first()
     if existing:
         raise HTTPException(status_code=400, detail="Delivery number already exists")
 
-    # Create delivery using scanned number
     delivery = Delivery(
-        id=str(uuid.uuid4()),  # <- Python UUID
+        id=str(uuid.uuid4()),
         delivery_number=payload.delivery_number,
         status=DeliveryStatus.created,
         expected_packages=payload.expected_packages,
@@ -221,9 +230,8 @@ def create_delivery(
         destination_id=payload.destination_id,
     )
     db.add(delivery)
-    db.flush()  # ensures delivery is inserted and ID exists in DB
+    db.flush()
 
-    # Audit log
     log = AuditLog(
         actor_id=current_user.id,
         event_type="delivery_created",
@@ -235,7 +243,6 @@ def create_delivery(
         },
     )
     db.add(log)
-
     db.commit()
     db.refresh(delivery)
 
@@ -248,6 +255,7 @@ def create_delivery(
         "destination_id": delivery.destination_id,
         "created": delivery.created_at.isoformat(),
     }
+
 # --------------------------
 # Delivery scanning
 # --------------------------
@@ -258,14 +266,12 @@ def scan_delivery(
     current_user: User = Depends(get_current_user),
     client_device_id: str | None = None
 ):
-    # 1️⃣ Fetch delivery
     delivery = db.query(Delivery).filter(
         Delivery.delivery_number == scan.delivery_number
     ).first()
     if not delivery:
         raise HTTPException(status_code=404, detail="Delivery not found")
 
-    # 2️⃣ Role-based warehouse checks
     if current_user.role == "driver":
         today = datetime.utcnow().date()
         route_warehouses = db.query(DriverRoute.warehouse_id).filter(
@@ -277,15 +283,12 @@ def scan_delivery(
         if delivery.source_id not in route_warehouses and delivery.destination_id not in route_warehouses:
             raise HTTPException(status_code=403, detail="Delivery not in your route today")
 
-    # 3️⃣ Stage dependency validation
     stage = scan.stage
     if stage == ScanStage.dest_arrival:
-        # Manager can only scan if driver fully picked
         if delivery.status != DeliveryStatus.picked:
             raise HTTPException(status_code=400, detail="Delivery must be fully picked before arrival scan")
 
     if stage == ScanStage.dest_receive:
-        # Manager can scan if driver fully picked OR if it has already arrived
         if delivery.status not in [
             DeliveryStatus.picked,
             DeliveryStatus.arrived,
@@ -293,7 +296,6 @@ def scan_delivery(
         ]:
             raise HTTPException(status_code=400, detail="Delivery must be picked/arrived first")
 
-    # 4️⃣ Determine stage and get/create counter
     counter = db.query(ScanCounter).filter(
         ScanCounter.delivery_id == delivery.id,
         ScanCounter.stage == stage
@@ -303,10 +305,8 @@ def scan_delivery(
         db.add(counter)
         db.flush()
 
-    # 🚫 Prevent overscan → capped
     new_total = min(counter.total + scan.count, delivery.expected_packages)
 
-    # 5️⃣ Insert scan event (log only real increment)
     increment = max(0, new_total - counter.total)
     if increment > 0:
         if current_user.role == "manager":
@@ -327,36 +327,29 @@ def scan_delivery(
         )
         db.add(scan_event)
 
-    # 6️⃣ Update scan counter
     counter.total = new_total
     db.add(counter)
 
-    # 7️⃣ Update delivery status with partials
     if increment > 0:
         if stage == ScanStage.source_pick:
             if new_total < delivery.expected_packages:
                 delivery.status = DeliveryStatus.partial_pick
             else:
                 delivery.status = DeliveryStatus.picked
-                # 🔔 Notify MoySklad when fully picked
-                # notify_moysklad(delivery.delivery_number, "picked")
+                notify_moysklad(delivery.delivery_number, "picked")
 
         elif stage == ScanStage.dest_arrival:
             delivery.status = DeliveryStatus.arrived
 
         elif stage == ScanStage.dest_receive:
-            # ✅ FIX: Only mark fully received when ALL packages are scanned,
-            # otherwise keep it in partial_receive
             if new_total >= delivery.expected_packages:
                 delivery.status = DeliveryStatus.received
-                # 🔔 Notify MoySklad when fully received
-                # notify_moysklad(delivery.delivery_number, "received")
+                notify_moysklad(delivery.delivery_number, "received")
             else:
                 delivery.status = DeliveryStatus.partial_receive
 
         db.add(delivery)
 
-    # 8️⃣ Audit log
     log = AuditLog(
         actor_id=current_user.id,
         event_type="scan",
@@ -365,10 +358,8 @@ def scan_delivery(
     )
     db.add(log)
 
-    # 9️⃣ Commit
     db.commit()
 
-    # 🔟 Collect counters per stage for response
     counters = {
         c.stage.value: c.total
         for c in db.query(ScanCounter).filter(ScanCounter.delivery_id == delivery.id).all()
