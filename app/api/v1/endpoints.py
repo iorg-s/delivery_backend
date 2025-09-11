@@ -31,7 +31,7 @@ def notify_moysklad(delivery_number: str, status: str):
         return
 
     headers = {
-        "Authorization": f"Bearer {MOYSKLAD_TOKEN}",
+        "Authorization": f"{MOYSKLAD_TOKEN}",
         "Accept": "application/json;charset=utf-8",
         "Content-Type": "application/json;charset=utf-8",
     }
