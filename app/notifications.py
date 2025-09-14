@@ -218,6 +218,16 @@ async def websocket_notifications(ws: WebSocket):
         except Exception:
             pass
 
+# This stays in memory only, disappears on server restart
+user_fcm_tokens: dict[str, str] = {}
+
+def register_fcm_token(user_id: str, token: str):
+    user_fcm_tokens[user_id] = token
+
+def get_all_driver_tokens(db):
+    drivers = db.query(User).filter(User.role == "driver").all()
+    return [user_fcm_tokens.get(d.id) for d in drivers if d.id in user_fcm_tokens]
+
 
 # Startup/shutdown helpers to control watcher
 async def start_watcher():
