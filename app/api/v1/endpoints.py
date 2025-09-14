@@ -490,6 +490,8 @@ def supervisor_get_deliveries(
 class SupervisorDeliveryUpdate(BaseModel):
     expected_packages: Optional[int]
     destination_id: Optional[str]
+    source_id: Optional[str]      # ✅ added
+    status: Optional[str]         # ✅ added
 
 @router.put("/{delivery_id}")
 def supervisor_update_delivery(
@@ -505,10 +507,23 @@ def supervisor_update_delivery(
     if not delivery:
         raise HTTPException(status_code=404, detail="Delivery not found")
 
+    updated_fields = {}
+
     if payload.expected_packages is not None:
         delivery.expected_packages = payload.expected_packages
+        updated_fields["expected_packages"] = payload.expected_packages
     if payload.destination_id is not None:
         delivery.destination_id = payload.destination_id
+        updated_fields["destination_id"] = payload.destination_id
+    if payload.source_id is not None:
+        delivery.source_id = payload.source_id
+        updated_fields["source_id"] = payload.source_id
+    if payload.status is not None:
+        try:
+            delivery.status = DeliveryStatus(payload.status)
+            updated_fields["status"] = payload.status
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid status value")
 
     db.add(delivery)
 
@@ -516,7 +531,7 @@ def supervisor_update_delivery(
         actor_id=current_user.id,
         event_type="delivery_updated",
         delivery_id=delivery.id,
-        details={"updated_fields": payload.dict(exclude_none=True)}
+        details={"updated_fields": updated_fields}
     )
     db.add(log)
     db.commit()
