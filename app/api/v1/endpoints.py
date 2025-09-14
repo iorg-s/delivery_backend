@@ -15,6 +15,7 @@ from app.models import (
 )
 from app.auth import get_current_user
 from app.api.v1.schemas import ScanRequest, TransferCreate
+from app.firebase import send_push  # ← added import for firebase
 
 router = APIRouter(prefix="/deliveries", tags=["deliveries"])
 
@@ -77,6 +78,7 @@ def notify_moysklad(delivery_number: str, status: str):
     except Exception as e:
         print(f"[MoySklad] Failed to update {delivery_number}: {e}")
 
+
 # --------------------------
 # Multi-shop selection
 # --------------------------
@@ -84,13 +86,11 @@ def notify_moysklad(delivery_number: str, status: str):
 class DriverRouteSelect(BaseModel):
     warehouse_ids: List[str]
 
-
 @router.get("/available_warehouses")
 def get_warehouses(db: Session = Depends(get_db)):
     """Return all warehouses except the main one."""
     warehouses = db.query(Warehouse).filter(Warehouse.is_main == False).all()
     return [{"id": w.id, "name": w.name, "is_main": w.is_main} for w in warehouses]
-
 
 @router.post("/select_route")
 def select_route(
@@ -99,27 +99,22 @@ def select_route(
     current_user: User = Depends(get_current_user)
 ):
     today = date.today()
-
-    # Remove existing selections for today
     db.query(DriverRoute).filter(
         DriverRoute.driver_id == current_user.id,
         DriverRoute.route_date == today
     ).delete()
 
-    # Always add the MAIN warehouse automatically
     main = db.query(Warehouse).filter(Warehouse.is_main == True).first()
     if main:
         route = DriverRoute(driver_id=current_user.id, warehouse_id=main.id, route_date=today)
         db.add(route)
 
-    # Add driver-selected warehouses
     for wid in selection.warehouse_ids:
         route = DriverRoute(driver_id=current_user.id, warehouse_id=wid, route_date=today)
         db.add(route)
 
     db.commit()
     return {"message": "Route saved", "selected_warehouses": selection.warehouse_ids}
-
 
 @router.get("/driver_routes")
 def get_driver_route(
@@ -128,13 +123,11 @@ def get_driver_route(
 ):
     today = date.today()
     main_id = db.query(Warehouse.id).filter(Warehouse.is_main == True).scalar()
-
     routes = db.query(DriverRoute).filter(
         DriverRoute.driver_id == current_user.id,
         DriverRoute.route_date == today
     ).all()
 
-    # Only return non-main warehouses (shops)
     return [
         {"warehouse_id": r.warehouse_id}
         for r in routes if str(r.warehouse_id) != str(main_id)
@@ -176,7 +169,6 @@ def get_deliveries(
         q = q.filter(Delivery.status != DeliveryStatus.received)
 
     deliveries = q.all()
-
     result = []
     for d in deliveries:
         scanned = sum(c.total for c in d.scan_counters) if d.scan_counters else 0
@@ -196,6 +188,7 @@ def get_deliveries(
         })
 
     return result
+
 
 # --------------------------
 # Delivery creation
@@ -245,6 +238,17 @@ def create_delivery(
     db.add(log)
     db.commit()
     db.refresh(delivery)
+
+    # 🔔 Send push notifications
+    # Drivers: all deliveries
+    driver_tokens = [u.fcm_token for u in db.query(User).filter(User.role == "driver").all() if u.fcm_token]
+    for token in driver_tokens:
+        send_push(token, "New delivery", f"Delivery {delivery.delivery_number} has been created")
+
+    # Managers: only deliveries to their warehouse
+    manager_tokens = [u.fcm_token for u in db.query(User).filter(User.role == "manager", User.warehouse_id == delivery.destination_id).all() if u.fcm_token]
+    for token in manager_tokens:
+        send_push(token, "New delivery", f"Delivery {delivery.delivery_number} assigned to your warehouse")
 
     return {
         "id": delivery.id,
@@ -306,8 +310,8 @@ def scan_delivery(
         db.flush()
 
     new_total = min(counter.total + scan.count, delivery.expected_packages)
-
     increment = max(0, new_total - counter.total)
+
     if increment > 0:
         if current_user.role == "manager":
             warehouse_id = current_user.warehouse_id
