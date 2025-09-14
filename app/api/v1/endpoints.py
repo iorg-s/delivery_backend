@@ -555,13 +555,15 @@ def supervisor_delete_delivery(
     if not delivery:
         raise HTTPException(status_code=404, detail="Delivery not found")
 
-    # 🔹 Delete related scan events first
+    # 🔹 Delete related ScanEvents first
     db.query(ScanEvent).filter(ScanEvent.delivery_id == delivery_id).delete(synchronize_session=False)
 
-    # 🔹 Delete the delivery
-    db.delete(delivery)
+    # 🔹 Delete related TransferOrders
+    db.query(TransferOrder).filter(TransferOrder.delivery_id == delivery_id).delete(synchronize_session=False)
 
-    # 🔹 Log the deletion
+    # 🔹 ScanCounters are already cascade="all, delete-orphan", so deleting delivery will remove them automatically
+
+    # 🔹 Log the deletion BEFORE deleting delivery
     log = AuditLog(
         actor_id=current_user.id,
         event_type="delivery_deleted",
@@ -569,6 +571,11 @@ def supervisor_delete_delivery(
         details={"delivery_number": delivery.delivery_number}
     )
     db.add(log)
+    db.flush()  # make sure log is persisted before deleting delivery
+
+    # 🔹 Delete the delivery
+    db.delete(delivery)
+
     db.commit()
 
     return {"message": "Delivery deleted", "delivery_id": delivery.id}
