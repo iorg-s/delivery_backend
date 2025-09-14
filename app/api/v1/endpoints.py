@@ -555,8 +555,13 @@ def supervisor_delete_delivery(
     if not delivery:
         raise HTTPException(status_code=404, detail="Delivery not found")
 
+    # 🔹 Delete related scan events first
+    db.query(ScanEvent).filter(ScanEvent.delivery_id == delivery_id).delete(synchronize_session=False)
+
+    # 🔹 Delete the delivery
     db.delete(delivery)
 
+    # 🔹 Log the deletion
     log = AuditLog(
         actor_id=current_user.id,
         event_type="delivery_deleted",
@@ -565,6 +570,7 @@ def supervisor_delete_delivery(
     )
     db.add(log)
     db.commit()
+
     return {"message": "Delivery deleted", "delivery_id": delivery.id}
 
 # --------------------------------------
