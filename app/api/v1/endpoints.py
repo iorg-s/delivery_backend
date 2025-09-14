@@ -430,3 +430,291 @@ def get_all_warehouses(db: Session = Depends(get_db)):
 def register_fcm(token: str, current_user: User = Depends(get_current_user)):
     register_fcm_token(current_user.id, token)
     return {"status": "ok"}
+
+# --------------------------
+# Supervisor endpoints
+# --------------------------
+from fastapi import Query
+
+# --------------------------------------
+# 1️⃣ Global deliveries filter/search
+# --------------------------------------
+@router.get("/supervisor")
+def supervisor_get_deliveries(
+    delivery_number: Optional[str] = None,
+    source_id: Optional[str] = None,
+    destination_id: Optional[str] = None,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role != UserRole.supervisor:
+        raise HTTPException(status_code=403, detail="Only supervisors can perform this action")
+
+    q = db.query(Delivery).options(
+        joinedload(Delivery.source),
+        joinedload(Delivery.destination),
+    )
+
+    if delivery_number:
+        q = q.filter(Delivery.delivery_number.ilike(f"%{delivery_number}%"))
+    if source_id:
+        q = q.filter(Delivery.source_id == source_id)
+    if destination_id:
+        q = q.filter(Delivery.destination_id == destination_id)
+    if status:
+        try:
+            q = q.filter(Delivery.status == DeliveryStatus(status))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid status value")
+
+    deliveries = q.all()
+    result = []
+    for d in deliveries:
+        result.append({
+            "id": d.id,
+            "delivery_number": d.delivery_number,
+            "status": d.status.value,
+            "expected_packages": d.expected_packages,
+            "source_id": d.source_id,
+            "destination_id": d.destination_id,
+            "source_name": d.source.name if d.source else "Unknown",
+            "destination_name": d.destination.name if d.destination else "Unknown",
+            "counters": {c.stage.value: c.total for c in d.scan_counters} if d.scan_counters else {},
+        })
+    return result
+
+# --------------------------------------
+# 2️⃣ Update a delivery
+# --------------------------------------
+class SupervisorDeliveryUpdate(BaseModel):
+    expected_packages: Optional[int]
+    destination_id: Optional[str]
+
+@router.put("/{delivery_id}")
+def supervisor_update_delivery(
+    delivery_id: str,
+    payload: SupervisorDeliveryUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role != UserRole.supervisor:
+        raise HTTPException(status_code=403, detail="Only supervisors can perform this action")
+
+    delivery = db.query(Delivery).filter(Delivery.id == delivery_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    if payload.expected_packages is not None:
+        delivery.expected_packages = payload.expected_packages
+    if payload.destination_id is not None:
+        delivery.destination_id = payload.destination_id
+
+    db.add(delivery)
+
+    log = AuditLog(
+        actor_id=current_user.id,
+        event_type="delivery_updated",
+        delivery_id=delivery.id,
+        details={"updated_fields": payload.dict(exclude_none=True)}
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(delivery)
+
+    return {"message": "Delivery updated", "delivery_id": delivery.id}
+
+# --------------------------------------
+# 3️⃣ Delete a delivery
+# --------------------------------------
+@router.delete("/{delivery_id}")
+def supervisor_delete_delivery(
+    delivery_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role != UserRole.supervisor:
+        raise HTTPException(status_code=403, detail="Only supervisors can perform this action")
+
+    delivery = db.query(Delivery).filter(Delivery.id == delivery_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    db.delete(delivery)
+
+    log = AuditLog(
+        actor_id=current_user.id,
+        event_type="delivery_deleted",
+        delivery_id=delivery.id,
+        details={"delivery_number": delivery.delivery_number}
+    )
+    db.add(log)
+    db.commit()
+    return {"message": "Delivery deleted", "delivery_id": delivery.id}
+
+# --------------------------------------
+# 4️⃣ Manual scan adjustment
+# --------------------------------------
+class ManualScanRequest(BaseModel):
+    delivery_number: str
+    stage: ScanStage
+    count: int
+    warehouse_id: Optional[str] = None  # optional override
+
+@router.post("/manual_scan")
+def supervisor_manual_scan(
+    payload: ManualScanRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role != UserRole.supervisor:
+        raise HTTPException(status_code=403, detail="Only supervisors can perform this action")
+
+    delivery = db.query(Delivery).filter(Delivery.delivery_number == payload.delivery_number).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    counter = db.query(ScanCounter).filter(
+        ScanCounter.delivery_id == delivery.id,
+        ScanCounter.stage == payload.stage
+    ).first()
+    if not counter:
+        counter = ScanCounter(delivery_id=delivery.id, stage=payload.stage, total=0)
+        db.add(counter)
+        db.flush()
+
+    new_total = min(counter.total + payload.count, delivery.expected_packages)
+    increment = max(0, new_total - counter.total)
+
+    if increment > 0:
+        warehouse_id = payload.warehouse_id or (
+            delivery.source_id if payload.stage == ScanStage.source_pick else delivery.destination_id
+        )
+        scan_event = ScanEvent(
+            delivery_id=delivery.id,
+            stage=payload.stage,
+            scanned_by=current_user.id,
+            warehouse_id=warehouse_id,
+            count=increment,
+            client_device_id="supervisor_manual",
+            client_ts=datetime.utcnow()
+        )
+        db.add(scan_event)
+
+    counter.total = new_total
+    db.add(counter)
+
+    # Update delivery status based on stage
+    if payload.stage == ScanStage.source_pick:
+        if new_total < delivery.expected_packages:
+            delivery.status = DeliveryStatus.partial_pick
+        else:
+            delivery.status = DeliveryStatus.picked
+            notify_moysklad(delivery.delivery_number, "picked")
+    elif payload.stage == ScanStage.dest_arrival:
+        delivery.status = DeliveryStatus.arrived
+    elif payload.stage == ScanStage.dest_receive:
+        if new_total >= delivery.expected_packages:
+            delivery.status = DeliveryStatus.received
+            notify_moysklad(delivery.delivery_number, "received")
+        else:
+            delivery.status = DeliveryStatus.partial_receive
+
+    db.add(delivery)
+
+    log = AuditLog(
+        actor_id=current_user.id,
+        event_type="manual_scan",
+        delivery_id=delivery.id,
+        details={"stage": payload.stage.value, "count": increment}
+    )
+    db.add(log)
+    db.commit()
+
+    counters = {
+        c.stage.value: c.total
+        for c in db.query(ScanCounter).filter(ScanCounter.delivery_id == delivery.id).all()
+    }
+
+    return {"message": "Manual scan applied", "delivery_status": delivery.status.value, "counters": counters}
+
+# --------------------------------------
+# 5️⃣ Supervisor transfer override
+# --------------------------------------
+class SupervisorTransferRequest(BaseModel):
+    delivery_number: str
+    destination_id: str
+    package_count: int
+
+@router.post("/supervisor_transfer")
+def supervisor_transfer(
+    payload: SupervisorTransferRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role != UserRole.supervisor:
+        raise HTTPException(status_code=403, detail="Only supervisors can perform this action")
+
+    delivery = db.query(Delivery).filter(Delivery.delivery_number == payload.delivery_number).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    transfer_order = TransferOrder(
+        delivery_id=delivery.id,
+        from_id=delivery.source_id,
+        to_id=payload.destination_id,
+        expected_packages=payload.package_count,
+        created_by=current_user.id,
+        status="open"
+    )
+    db.add(transfer_order)
+    delivery.status = DeliveryStatus.redirected
+    db.add(delivery)
+
+    log = AuditLog(
+        actor_id=current_user.id,
+        event_type="supervisor_transfer",
+        delivery_id=delivery.id,
+        details={"to": payload.destination_id, "package_count": payload.package_count}
+    )
+    db.add(log)
+    db.commit()
+
+    return {"message": "Supervisor transfer created", "transfer_id": transfer_order.id}
+
+# --------------------------------------
+# 6️⃣ Audit logs view
+# --------------------------------------
+@router.get("/audit_logs")
+def supervisor_audit_logs(
+    delivery_id: Optional[str] = None,
+    actor_id: Optional[str] = None,
+    stage: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role != UserRole.supervisor:
+        raise HTTPException(status_code=403, detail="Only supervisors can perform this action")
+
+    q = db.query(AuditLog)
+
+    if delivery_id:
+        q = q.filter(AuditLog.delivery_id == delivery_id)
+    if actor_id:
+        q = q.filter(AuditLog.actor_id == actor_id)
+    if stage:
+        q = q.filter(AuditLog.details["stage"].astext == stage)
+
+    logs = q.order_by(AuditLog.created_at.desc()).all()
+
+    return [
+        {
+            "id": l.id,
+            "actor_id": l.actor_id,
+            "event_type": l.event_type,
+            "delivery_id": l.delivery_id,
+            "details": l.details,
+            "created_at": l.created_at.isoformat()
+        }
+        for l in logs
+    ]
