@@ -5,6 +5,7 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy import or_, select
+from sqlalchemy import text
 import uuid
 import os
 import requests  
@@ -178,10 +179,12 @@ def get_deliveries(
         dest_name = "Petricani" if d.destination and d.destination.is_main else (d.destination.name if d.destination else "Unknown")
 
         # ✅ Fetch comment dynamically from DB without touching the model
+
         comment = db.execute(
-            "SELECT comment FROM deliveries WHERE id = :id",
+            text("SELECT comment FROM deliveries WHERE id = :id"),
             {"id": str(d.id)}
         ).scalar() or ""
+
 
         result.append({
             "id": d.id,
