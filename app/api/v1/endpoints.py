@@ -179,8 +179,9 @@ def get_deliveries(
 
         # ✅ Fetch comment dynamically from DB without touching the model
         comment = db.execute(
-            select(Delivery.comment).where(Delivery.id == d.id)
-        ).scalar_one_or_none() or ""
+            "SELECT comment FROM deliveries WHERE id = :id",
+            {"id": str(d.id)}
+        ).scalar() or ""
 
         result.append({
             "id": d.id,
