@@ -186,7 +186,7 @@ def get_deliveries(
             "source_name": source_name,
             "destination_name": dest_name,
             "counters": {c.stage.value: c.total for c in d.scan_counters} if d.scan_counters else{},
-            "comment": d.comment,
+            "comment": getattr(d, "comment", "")
         })
 
     return result
