@@ -4,6 +4,7 @@ from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
+from sqlalchemy import or_, select
 import uuid
 import os
 import requests  
