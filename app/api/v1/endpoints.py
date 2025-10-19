@@ -176,6 +176,11 @@ def get_deliveries(
         source_name = "Petricani" if d.source and d.source.is_main else (d.source.name if d.source else "Unknown")
         dest_name = "Petricani" if d.destination and d.destination.is_main else (d.destination.name if d.destination else "Unknown")
 
+        # ✅ Fetch comment dynamically from DB without touching the model
+        comment = db.execute(
+            select(Delivery.comment).where(Delivery.id == d.id)
+        ).scalar_one_or_none() or ""
+
         result.append({
             "id": d.id,
             "delivery_number": d.delivery_number,
@@ -185,8 +190,8 @@ def get_deliveries(
             "destination_id": d.destination_id,
             "source_name": source_name,
             "destination_name": dest_name,
-            "counters": {c.stage.value: c.total for c in d.scan_counters} if d.scan_counters else{},
-            "comment": getattr(d, "comment", "")
+            "counters": {c.stage.value: c.total for c in d.scan_counters} if d.scan_counters else {},
+            "comment": comment  # ✅ now properly fetched
         })
 
     return result
