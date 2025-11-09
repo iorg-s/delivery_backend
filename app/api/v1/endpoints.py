@@ -148,11 +148,19 @@ def get_deliveries(
 ):
     ids = [s for s in (shop_ids or "").split(",") if s]
 
-    # Preload related tables AND include comment in main query
+    # Subquery to fetch comment without needing model field
+    comment_subquery = (
+        select(text("comment"))
+        .select_from(Delivery.__table__)
+        .where(Delivery.id == text("deliveries.id"))
+        .correlate(Delivery)
+        .as_scalar()
+    )
+
     q = (
         db.query(
             Delivery,
-            Delivery.comment,  # fetch comment directly
+            comment_subquery.label("comment"),   # <-- fetched here
         )
         .options(
             joinedload(Delivery.source),
@@ -160,7 +168,7 @@ def get_deliveries(
         )
     )
 
-    # warehouse-based filtering
+    # warehouse filter
     if current_user.role in ("manager", "supervisor"):
         filter_ids = [str(current_user.warehouse_id)]
     elif ids:
@@ -176,11 +184,10 @@ def get_deliveries(
             )
         )
 
-    # drivers only see non-completed deliveries
+    # driver filter
     if current_user.role == "driver":
         q = q.filter(Delivery.status != DeliveryStatus.received)
 
-    # get rows
     rows = q.all()
 
     result = []
