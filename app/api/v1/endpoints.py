@@ -791,6 +791,7 @@ class DeliveryHandoverStatus(str, Enum):
 class RequiredDeliveryScan(BaseModel):
     delivery_id: str
     status: DeliveryHandoverStatus
+    expected_packages: int = 1  # default 1
 
 @router.post("/required_deliveries/scan")
 def scan_required_delivery(payload: RequiredDeliveryScan, db: Session = Depends(get_db)):
@@ -814,9 +815,13 @@ def scan_required_delivery(payload: RequiredDeliveryScan, db: Session = Depends(
         db.execute(
             """
             INSERT INTO required_deliveries (delivery_id, expected_packages, status, added_at)
-            VALUES (:delivery_id, 0, :status, NOW())
+            VALUES (:delivery_id, :expected_packages, :status, NOW())
             """,
-            {"delivery_id": payload.delivery_id, "status": payload.status.value}
+            {
+                "delivery_id": payload.delivery_id,
+                "expected_packages": payload.expected_packages,
+                "status": payload.status.value
+            }
         )
     db.commit()
     return {"message": f"Delivery {payload.delivery_id} marked as {payload.status.value}"}
