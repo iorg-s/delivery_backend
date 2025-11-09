@@ -784,6 +784,7 @@ def supervisor_audit_logs(
 # --------------------------
 from enum import Enum
 from sqlalchemy import text
+from fastapi import HTTPException
 
 class DeliveryHandoverStatus(str, Enum):
     out = "out"   # delivered to subcontractor
@@ -846,3 +847,28 @@ def list_required_deliveries_status(db: Session = Depends(get_db)):
         }
         for r in rows
     ]
+
+
+@router.delete("/required_deliveries/scan/{delivery_id}")
+def delete_required_delivery(delivery_id: str, db: Session = Depends(get_db)):
+    """
+    Delete a tracked delivery by its delivery_id.
+    Only removes the row from the database.
+    """
+    # Check if the delivery exists
+    existing = db.execute(
+        text("SELECT id FROM required_deliveries WHERE delivery_id = :delivery_id"),
+        {"delivery_id": delivery_id}
+    ).fetchone()
+
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Delivery {delivery_id} not found")
+
+    # Delete the delivery
+    db.execute(
+        text("DELETE FROM required_deliveries WHERE delivery_id = :delivery_id"),
+        {"delivery_id": delivery_id}
+    )
+    db.commit()
+
+    return {"message": f"Delivery {delivery_id} deleted successfully"}
