@@ -17,8 +17,8 @@ from app.models import (
 )
 from app.auth import get_current_user
 from app.api.v1.schemas import ScanRequest, TransferCreate
-from app.firebase import send_push  # ← added import for firebase
-from app.notifications import register_fcm_token
+# from app.firebase import send_push  # ← added import for firebase
+# from app.notifications import register_fcm_token
 
 router = APIRouter(prefix="/deliveries", tags=["deliveries"])
 
@@ -458,10 +458,10 @@ def get_all_warehouses(db: Session = Depends(get_db)):
     warehouses = db.query(Warehouse).all()
     return [{"id": w.id, "name": w.name, "is_main": w.is_main} for w in warehouses]
 
-@router.post("/register_fcm")
-def register_fcm(token: str, current_user: User = Depends(get_current_user)):
-    register_fcm_token(current_user.id, token)
-    return {"status": "ok"}
+# @router.post("/register_fcm")
+# def register_fcm(token: str, current_user: User = Depends(get_current_user)):
+#    register_fcm_token(current_user.id, token)
+#    return {"status": "ok"}
 
 # --------------------------
 # Supervisor endpoints
