@@ -783,6 +783,7 @@ def supervisor_audit_logs(
 # Required deliveries
 # --------------------------
 from enum import Enum
+from sqlalchemy import text
 
 class DeliveryHandoverStatus(str, Enum):
     out = "out"   # delivered to subcontractor
@@ -800,23 +801,23 @@ def scan_required_delivery(payload: RequiredDeliveryScan, db: Session = Depends(
     """
     # check if row already exists
     existing = db.execute(
-        "SELECT id FROM required_deliveries WHERE delivery_id = :delivery_id",
+        text("SELECT id FROM required_deliveries WHERE delivery_id = :delivery_id"),
         {"delivery_id": payload.delivery_id}
     ).fetchone()
 
     if existing:
         # update status to returned if scanned back
         db.execute(
-            "UPDATE required_deliveries SET status = :status, added_at = NOW() WHERE delivery_id = :delivery_id",
+            text("UPDATE required_deliveries SET status = :status, added_at = NOW() WHERE delivery_id = :delivery_id"),
             {"delivery_id": payload.delivery_id, "status": payload.status.value}
         )
     else:
         # create new row with 'out' by default
         db.execute(
-            """
-            INSERT INTO required_deliveries (delivery_id, expected_packages, status, added_at)
-            VALUES (:delivery_id, :expected_packages, :status, NOW())
-            """,
+            text("""
+                INSERT INTO required_deliveries (delivery_id, expected_packages, status, added_at)
+                VALUES (:delivery_id, :expected_packages, :status, NOW())
+            """),
             {
                 "delivery_id": payload.delivery_id,
                 "expected_packages": payload.expected_packages,
@@ -833,7 +834,7 @@ def list_required_deliveries_status(db: Session = Depends(get_db)):
     List all tracked deliveries with handover status.
     """
     rows = db.execute(
-        "SELECT delivery_id, expected_packages, status, added_at FROM required_deliveries"
+        text("SELECT delivery_id, expected_packages, status, added_at FROM required_deliveries")
     ).fetchall()
 
     return [
