@@ -778,3 +778,65 @@ def supervisor_audit_logs(
         }
         for l in logs
     ]
+
+# --------------------------
+# Required deliveries
+# --------------------------
+from enum import Enum
+
+class DeliveryHandoverStatus(str, Enum):
+    out = "out"   # delivered to subcontractor
+    returned = "in"  # returned from subcontractor
+
+class RequiredDeliveryScan(BaseModel):
+    delivery_id: str
+    status: DeliveryHandoverStatus
+
+@router.post("/required_deliveries/scan")
+def scan_required_delivery(payload: RequiredDeliveryScan, db: Session = Depends(get_db)):
+    """
+    Log that a delivery was handed over to subcontractor or returned.
+    """
+    # check if row already exists
+    existing = db.execute(
+        "SELECT id FROM required_deliveries WHERE delivery_id = :delivery_id",
+        {"delivery_id": payload.delivery_id}
+    ).fetchone()
+
+    if existing:
+        # update status to returned if scanned back
+        db.execute(
+            "UPDATE required_deliveries SET status = :status, added_at = NOW() WHERE delivery_id = :delivery_id",
+            {"delivery_id": payload.delivery_id, "status": payload.status.value}
+        )
+    else:
+        # create new row with 'out' by default
+        db.execute(
+            """
+            INSERT INTO required_deliveries (delivery_id, expected_packages, status, added_at)
+            VALUES (:delivery_id, 0, :status, NOW())
+            """,
+            {"delivery_id": payload.delivery_id, "status": payload.status.value}
+        )
+    db.commit()
+    return {"message": f"Delivery {payload.delivery_id} marked as {payload.status.value}"}
+
+
+@router.get("/required_deliveries/scan")
+def list_required_deliveries_status(db: Session = Depends(get_db)):
+    """
+    List all tracked deliveries with handover status.
+    """
+    rows = db.execute(
+        "SELECT delivery_id, expected_packages, status, added_at FROM required_deliveries"
+    ).fetchall()
+
+    return [
+        {
+            "delivery_id": r.delivery_id,
+            "expected_packages": r.expected_packages,
+            "status": r.status,
+            "added_at": r.added_at.isoformat() if r.added_at else None
+        }
+        for r in rows
+    ]
