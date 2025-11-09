@@ -148,11 +148,19 @@ def get_deliveries(
 ):
     ids = [s for s in (shop_ids or "").split(",") if s]
 
-    q = db.query(Delivery).options(
-        joinedload(Delivery.source),
-        joinedload(Delivery.destination),
+    # Preload related tables AND include comment in main query
+    q = (
+        db.query(
+            Delivery,
+            Delivery.comment,  # fetch comment directly
+        )
+        .options(
+            joinedload(Delivery.source),
+            joinedload(Delivery.destination),
+        )
     )
 
+    # warehouse-based filtering
     if current_user.role in ("manager", "supervisor"):
         filter_ids = [str(current_user.warehouse_id)]
     elif ids:
@@ -164,40 +172,46 @@ def get_deliveries(
         q = q.filter(
             or_(
                 Delivery.destination_id.in_(filter_ids),
-                Delivery.source_id.in_(filter_ids)
+                Delivery.source_id.in_(filter_ids),
             )
         )
 
+    # drivers only see non-completed deliveries
     if current_user.role == "driver":
         q = q.filter(Delivery.status != DeliveryStatus.received)
 
-    deliveries = q.all()
+    # get rows
+    rows = q.all()
+
     result = []
-    for d in deliveries:
-        scanned = sum(c.total for c in d.scan_counters) if d.scan_counters else 0
-        source_name = "Petricani" if d.source and d.source.is_main else (d.source.name if d.source else "Unknown")
-        dest_name = "Petricani" if d.destination and d.destination.is_main else (d.destination.name if d.destination else "Unknown")
+    for d, comment in rows:
+        source_name = (
+            "Petricani"
+            if d.source and d.source.is_main
+            else (d.source.name if d.source else "Unknown")
+        )
+        dest_name = (
+            "Petricani"
+            if d.destination and d.destination.is_main
+            else (d.destination.name if d.destination else "Unknown")
+        )
 
-        # ✅ Fetch comment dynamically from DB without touching the model
-
-        comment = db.execute(
-            text("SELECT comment FROM deliveries WHERE id = :id"),
-            {"id": str(d.id)}
-        ).scalar() or ""
-
-
-        result.append({
-            "id": d.id,
-            "delivery_number": d.delivery_number,
-            "status": d.status.value,
-            "expected_packages": d.expected_packages,
-            "source_id": d.source_id,
-            "destination_id": d.destination_id,
-            "source_name": source_name,
-            "destination_name": dest_name,
-            "counters": {c.stage.value: c.total for c in d.scan_counters} if d.scan_counters else {},
-            "comment": comment  # ✅ now properly fetched
-        })
+        result.append(
+            {
+                "id": d.id,
+                "delivery_number": d.delivery_number,
+                "status": d.status.value,
+                "expected_packages": d.expected_packages,
+                "source_id": d.source_id,
+                "destination_id": d.destination_id,
+                "source_name": source_name,
+                "destination_name": dest_name,
+                "counters": {c.stage.value: c.total for c in d.scan_counters}
+                if d.scan_counters
+                else {},
+                "comment": comment or "",
+            }
+        )
 
     return result
 
