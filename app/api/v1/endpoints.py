@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session, joinedload
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from sqlalchemy.orm import Session, joinedload, selectinload
 from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel, Field
@@ -21,7 +21,8 @@ from app.api.v1.schemas import ScanRequest, TransferCreate
 # from app.notifications import register_fcm_token
 
 router = APIRouter(prefix="/deliveries", tags=["deliveries"])
-
+def role_value(user: User) -> str:
+    return user.role.value if hasattr(user.role, "value") else str(user.role)
 # ==================================
 # MOYSKLAD
 # ==================================
@@ -92,7 +93,12 @@ class DriverRouteSelect(BaseModel):
 @router.get("/available_warehouses")
 def get_warehouses(db: Session = Depends(get_db)):
     """Return all warehouses except the main one."""
-    warehouses = db.query(Warehouse).filter(Warehouse.is_main == False).all()
+    warehouses = (
+        db.query(Warehouse)
+        .filter(Warehouse.is_main == False)
+        .order_by(Warehouse.name.asc())
+        .all()
+    )
     return [{"id": w.id, "name": w.name, "is_main": w.is_main} for w in warehouses]
 
 @router.post("/select_route")
@@ -143,34 +149,33 @@ def get_driver_route(
 @router.get("")
 def get_deliveries(
     shop_ids: Optional[str] = None,
+    limit: int = 300,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    ids = [s for s in (shop_ids or "").split(",") if s]
+    user_role = role_value(current_user)
+    ids = [s.strip() for s in (shop_ids or "").split(",") if s.strip()]
 
-    # Subquery to fetch comment without needing model field
-    comment_subquery = (
-        select(text("comment"))
-        .select_from(Delivery.__table__)
-        .where(Delivery.id == text("deliveries.id"))
-        .correlate(Delivery)
-        .as_scalar()
-    )
+    # safety limit, so the app never downloads thousands of rows
+    limit = max(1, min(limit, 1000))
 
     q = (
-        db.query(
-            Delivery,
-            comment_subquery.label("comment"),   # <-- fetched here
-        )
+        db.query(Delivery)
         .options(
             joinedload(Delivery.source),
             joinedload(Delivery.destination),
+            selectinload(Delivery.scan_counters),
         )
     )
 
     # warehouse filter
-    if current_user.role in ("manager", "supervisor"):
-        filter_ids = [str(current_user.warehouse_id)]
+    if user_role in ("manager", "supervisor"):
+        if current_user.warehouse_id:
+            filter_ids = [str(current_user.warehouse_id)]
+        else:
+            filter_ids = []
+    elif user_role == "driver" and ids:
+        filter_ids = ids
     elif ids:
         filter_ids = ids
     else:
@@ -184,14 +189,18 @@ def get_deliveries(
             )
         )
 
-    # driver filter
-    if current_user.role == "driver":
+    # driver should not load completed/received deliveries
+    if user_role == "driver":
         q = q.filter(Delivery.status != DeliveryStatus.received)
 
-    rows = q.all()
+    rows = (
+        q.order_by(Delivery.created_at.desc())
+        .limit(limit)
+        .all()
+    )
 
     result = []
-    for d, comment in rows:
+    for d in rows:
         source_name = (
             "Petricani"
             if d.source and d.source.is_main
@@ -207,16 +216,17 @@ def get_deliveries(
             {
                 "id": d.id,
                 "delivery_number": d.delivery_number,
-                "status": d.status.value,
+                "status": d.status.value if hasattr(d.status, "value") else str(d.status),
                 "expected_packages": d.expected_packages,
                 "source_id": d.source_id,
                 "destination_id": d.destination_id,
                 "source_name": source_name,
                 "destination_name": dest_name,
-                "counters": {c.stage.value: c.total for c in d.scan_counters}
-                if d.scan_counters
-                else {},
-                "comment": comment or "",
+                "counters": {
+                    c.stage.value if hasattr(c.stage, "value") else str(c.stage): c.total
+                    for c in d.scan_counters
+                } if d.scan_counters else {},
+                "comment": getattr(d, "comment", "") or "",
             }
         )
 
@@ -299,6 +309,7 @@ def create_delivery(
 @router.post("/scan")
 def scan_delivery(
     scan: ScanRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     client_device_id: str | None = None
@@ -309,7 +320,9 @@ def scan_delivery(
     if not delivery:
         raise HTTPException(status_code=404, detail="Delivery not found")
 
-    if current_user.role == "driver":
+    user_role = role_value(current_user)
+
+    if user_role == "driver":
         today = datetime.utcnow().date()
         route_warehouses = db.query(DriverRoute.warehouse_id).filter(
             DriverRoute.driver_id == current_user.id,
@@ -346,7 +359,7 @@ def scan_delivery(
     increment = max(0, new_total - counter.total)
 
     if increment > 0:
-        if current_user.role == "manager":
+        if user_role == "manager":
             warehouse_id = current_user.warehouse_id
         elif stage == ScanStage.source_pick:
             warehouse_id = delivery.source_id
@@ -373,7 +386,7 @@ def scan_delivery(
                 delivery.status = DeliveryStatus.partial_pick
             else:
                 delivery.status = DeliveryStatus.picked
-                notify_moysklad(delivery.delivery_number, "picked")
+                background_tasks.add_task(notify_moysklad, delivery.delivery_number, "picked")
 
         elif stage == ScanStage.dest_arrival:
             delivery.status = DeliveryStatus.arrived
@@ -381,7 +394,7 @@ def scan_delivery(
         elif stage == ScanStage.dest_receive:
             if new_total >= delivery.expected_packages:
                 delivery.status = DeliveryStatus.received
-                notify_moysklad(delivery.delivery_number, "received")
+                background_tasks.add_task(notify_moysklad, delivery.delivery_number, "received")
             else:
                 delivery.status = DeliveryStatus.partial_receive
 
@@ -455,7 +468,7 @@ def create_transfer(
 @router.get("/all_warehouses")
 def get_all_warehouses(db: Session = Depends(get_db)):
     """Return all warehouses, including main."""
-    warehouses = db.query(Warehouse).all()
+    warehouses = db.query(Warehouse).order_by(Warehouse.is_main.desc(), Warehouse.name.asc()).all()
     return [{"id": w.id, "name": w.name, "is_main": w.is_main} for w in warehouses]
 
 # @router.post("/register_fcm")
