@@ -66,7 +66,7 @@ class Delivery(Base):
     status = Column(Enum(DeliveryStatus), nullable=False, default=DeliveryStatus.created)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
+    comment = Column(String, nullable=True)
     source = relationship("Warehouse", foreign_keys=[source_id])
     destination = relationship("Warehouse", foreign_keys=[destination_id])
 
