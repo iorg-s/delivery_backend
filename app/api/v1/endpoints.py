@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session, joinedload, selectinload
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Optional, List
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
@@ -23,6 +23,15 @@ from app.api.v1.schemas import ScanRequest, TransferCreate
 router = APIRouter(prefix="/deliveries", tags=["deliveries"])
 def role_value(user: User) -> str:
     return user.role.value if hasattr(user.role, "value") else str(user.role)
+
+
+def legacy_actor_uid(user: User) -> str:
+    return f"legacy:{user.id}"
+
+
+def legacy_actor_name(user: User) -> str:
+    email = str(user.email or "").strip()
+    return email.split("@", 1)[0] if email else str(user.id)
 # ==================================
 # MOYSKLAD
 # ==================================
@@ -382,6 +391,8 @@ def scan_delivery(
 
     if increment > 0:
         if stage == ScanStage.source_pick:
+            delivery.assigned_driver_uid = legacy_actor_uid(current_user)
+            delivery.assigned_driver_name = legacy_actor_name(current_user)
             if new_total < delivery.expected_packages:
                 delivery.status = DeliveryStatus.partial_pick
             else:
@@ -390,10 +401,21 @@ def scan_delivery(
 
         elif stage == ScanStage.dest_arrival:
             delivery.status = DeliveryStatus.arrived
+            if delivery.arrived_at is None:
+                delivery.arrived_at = datetime.now(timezone.utc)
+                delivery.arrived_by_uid = legacy_actor_uid(current_user)
+                delivery.arrived_by_name = legacy_actor_name(current_user)
+            delivery.current_location_name = (
+                delivery.destination.name if delivery.destination else None
+            )
 
         elif stage == ScanStage.dest_receive:
             if new_total >= delivery.expected_packages:
                 delivery.status = DeliveryStatus.received
+                delivery.completed_at = datetime.now(timezone.utc)
+                delivery.completed_by_uid = legacy_actor_uid(current_user)
+                delivery.completed_by_name = legacy_actor_name(current_user)
+                delivery.archived_at = datetime.now(timezone.utc)
                 background_tasks.add_task(notify_moysklad, delivery.delivery_number, "received")
             else:
                 delivery.status = DeliveryStatus.partial_receive
@@ -679,6 +701,8 @@ def supervisor_manual_scan(
 
     # Update delivery status based on stage
     if payload.stage == ScanStage.source_pick:
+        delivery.assigned_driver_uid = legacy_actor_uid(current_user)
+        delivery.assigned_driver_name = legacy_actor_name(current_user)
         if new_total < delivery.expected_packages:
             delivery.status = DeliveryStatus.partial_pick
         else:
@@ -686,9 +710,20 @@ def supervisor_manual_scan(
             notify_moysklad(delivery.delivery_number, "picked")
     elif payload.stage == ScanStage.dest_arrival:
         delivery.status = DeliveryStatus.arrived
+        if delivery.arrived_at is None:
+            delivery.arrived_at = datetime.now(timezone.utc)
+            delivery.arrived_by_uid = legacy_actor_uid(current_user)
+            delivery.arrived_by_name = legacy_actor_name(current_user)
+        delivery.current_location_name = (
+            delivery.destination.name if delivery.destination else None
+        )
     elif payload.stage == ScanStage.dest_receive:
         if new_total >= delivery.expected_packages:
             delivery.status = DeliveryStatus.received
+            delivery.completed_at = datetime.now(timezone.utc)
+            delivery.completed_by_uid = legacy_actor_uid(current_user)
+            delivery.completed_by_name = legacy_actor_name(current_user)
+            delivery.archived_at = datetime.now(timezone.utc)
             notify_moysklad(delivery.delivery_number, "received")
         else:
             delivery.status = DeliveryStatus.partial_receive

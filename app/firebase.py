@@ -11,6 +11,11 @@ if not firebase_admin._apps:
         cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred)
 
+
+def firebase_is_configured() -> bool:
+    """Return whether Admin SDK credentials were loaded for this process."""
+    return bool(firebase_admin._apps)
+
 def send_push(token: str, title: str, body: str, data: dict = None):
     """Send push notification to a device token"""
     message = messaging.Message(
