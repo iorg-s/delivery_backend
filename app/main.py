@@ -4,6 +4,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
+from sqlalchemy import inspect, text
 from .db import engine, Base
 from app.api.v1.endpoints import router as api_router
 from app.api.v1.driver_routes import router as driver_routes_router
@@ -21,6 +22,21 @@ def run_database_migrations() -> None:
     project_root = Path(__file__).resolve().parent.parent
     config = Config(str(project_root / "alembic.ini"))
     config.set_main_option("script_location", str(project_root / "alembic"))
+    inspector = inspect(engine)
+    # Production predates Alembic and was originally initialized with
+    # Base.metadata.create_all(). Stamp that known baseline only when its core
+    # table exists and the Alembic ledger is absent or empty. Never overwrite a
+    # real revision value.
+    if inspector.has_table("deliveries"):
+        has_version_table = inspector.has_table("alembic_version")
+        current_revision = None
+        if has_version_table:
+            with engine.connect() as connection:
+                current_revision = connection.execute(
+                    text("SELECT version_num FROM alembic_version LIMIT 1")
+                ).scalar_one_or_none()
+        if not current_revision:
+            command.stamp(config, "17301793ba4f")
     command.upgrade(config, "head")
 
 # Auth
