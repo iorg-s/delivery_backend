@@ -1,4 +1,8 @@
  # app/main.py
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
 from fastapi import FastAPI
 from .db import engine, Base
 from app.api.v1.endpoints import router as api_router
@@ -10,6 +14,14 @@ from app.api.v2.deliveries import router as deliveries_v2_router
 from app.notifications import router as notifications_router, start_watcher, stop_watcher
 
 app = FastAPI(title="Delivery App")
+
+
+def run_database_migrations() -> None:
+    """Bring PostgreSQL to the code revision before accepting traffic."""
+    project_root = Path(__file__).resolve().parent.parent
+    config = Config(str(project_root / "alembic.ini"))
+    config.set_main_option("script_location", str(project_root / "alembic"))
+    command.upgrade(config, "head")
 
 # Auth
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
@@ -26,6 +38,7 @@ app.include_router(notifications_router)
 
 @app.on_event("startup")
 async def startup_event():
+    run_database_migrations()
     Base.metadata.create_all(bind=engine)
     # start background watcher
     await start_watcher()
