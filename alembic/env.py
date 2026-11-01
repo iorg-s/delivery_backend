@@ -16,7 +16,8 @@ config = context.config
 
 # Set up logging
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep uvicorn's loggers: migrations run inside the app at startup.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Set SQLAlchemy URL from environment variable
 config.set_main_option('sqlalchemy.url', os.getenv('DATABASE_URL'))
@@ -52,6 +53,11 @@ def run_migrations_online():
             # Fail with a visible error instead of hanging the deploy when
             # another connection holds a lock on a table being altered.
             connection.execute(text("SET lock_timeout = '30s'"))
+            # SQLAlchemy 2 auto-began a transaction for the SET; end it so
+            # alembic opens (and commits) its own. Otherwise alembic treats the
+            # transaction as external, never commits, and the migration is
+            # rolled back when the connection closes. The setting persists.
+            connection.commit()
         context.configure(
             connection=connection, target_metadata=target_metadata
         )
