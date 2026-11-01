@@ -1,4 +1,5 @@
  # app/main.py
+import traceback
 from pathlib import Path
 
 from alembic import command
@@ -25,7 +26,9 @@ def release_stale_delivery_locks() -> int:
     its whole lifetime. During a deploy that old instance is still running,
     and its lock blocks the migration's ALTER TABLE indefinitely. Only
     connections idle in a transaction for over a minute and holding a lock on
-    deliveries are ended; normal requests never stay in that state.
+    deliveries are ended; normal requests never stay in that state. The
+    watcher queries every few seconds inside that transaction, so its
+    state_change keeps resetting: the transaction start is what is old.
     """
     if engine.dialect.name != "postgresql":
         return 0
@@ -36,7 +39,7 @@ def release_stale_delivery_locks() -> int:
             WHERE a.datname = current_database()
               AND a.pid <> pg_backend_pid()
               AND a.state = 'idle in transaction'
-              AND a.state_change < now() - interval '60 seconds'
+              AND a.xact_start < now() - interval '60 seconds'
               AND EXISTS (
                   SELECT 1 FROM pg_locks l
                   JOIN pg_class c ON c.oid = l.relation
@@ -88,7 +91,13 @@ app.include_router(notifications_router)
 
 @app.on_event("startup")
 async def startup_event():
-    run_database_migrations()
+    try:
+        run_database_migrations()
+    except Exception:
+        # Alembic's logging config disables uvicorn's error logger, so print
+        # the cause before the process exits.
+        traceback.print_exc()
+        raise
     Base.metadata.create_all(bind=engine)
     # start background watcher
     await start_watcher()
