@@ -10,6 +10,7 @@ from app.api.v1.endpoints import router as api_router
 from app.api.v1.driver_routes import router as driver_routes_router
 from app.auth import auth_router
 from app.api.v2.deliveries import router as deliveries_v2_router
+from app.api.bridge import router as bridge_router
 
 # --- Notifications ---
 from app.notifications import router as notifications_router, start_watcher, stop_watcher
@@ -48,6 +49,8 @@ app.include_router(driver_routes_router)
 # API endpoints
 app.include_router(api_router)
 app.include_router(deliveries_v2_router)
+# Render <-> Firebase delivery bridge (header secret DELIVERY_BRIDGE_SECRET)
+app.include_router(bridge_router)
 
 # Notifications WS
 app.include_router(notifications_router)
