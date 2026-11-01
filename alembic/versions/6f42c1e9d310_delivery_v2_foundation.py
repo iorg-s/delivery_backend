@@ -16,37 +16,60 @@ branch_labels = None
 depends_on = None
 
 
+# An earlier deploy of the v2 code ran Base.metadata.create_all() at startup,
+# which created the new tables (and their indexes) but not the new columns on
+# deliveries. Every step skips what already exists, so the upgrade completes
+# on that database as well as on a clean one.
+def _inspector():
+    return sa.inspect(op.get_bind())
+
+
+def _add_column(table: str, column: sa.Column) -> None:
+    if column.name not in {c["name"] for c in _inspector().get_columns(table)}:
+        op.add_column(table, column)
+
+
+def _create_index(name: str, table: str, columns: list) -> None:
+    if name not in {i["name"] for i in _inspector().get_indexes(table)}:
+        op.create_index(name, table, columns)
+
+
+def _create_table(name: str, *elements) -> None:
+    if not _inspector().has_table(name):
+        op.create_table(name, *elements)
+
+
 def upgrade() -> None:
     # Older production databases were created before partial scan statuses were
     # added to the ORM enum. IF NOT EXISTS keeps the migration rerunnable.
     op.execute("ALTER TYPE deliverystatus ADD VALUE IF NOT EXISTS 'partial_pick'")
     op.execute("ALTER TYPE deliverystatus ADD VALUE IF NOT EXISTS 'partial_receive'")
-    op.add_column("deliveries", sa.Column("delivery_type", sa.String(), nullable=False, server_default="standard"))
-    op.add_column("deliveries", sa.Column("handover_status", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("source_name_snapshot", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("destination_name_snapshot", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("current_location_name", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("placement", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("assigned_driver_uid", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("assigned_driver_name", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("arrived_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("deliveries", sa.Column("arrived_by_uid", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("arrived_by_name", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("deliveries", sa.Column("completed_by_uid", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("completed_by_name", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("archived_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("deliveries", sa.Column("moysklad_document_type", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("moysklad_document_id", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("moysklad_document_name", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("company_name", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("item_summary", sa.JSON(), nullable=True))
-    op.add_column("deliveries", sa.Column("enrichment_status", sa.String(), nullable=False, server_default="not_requested"))
-    op.add_column("deliveries", sa.Column("enrichment_error", sa.String(), nullable=True))
-    op.add_column("deliveries", sa.Column("enrichment_attempts", sa.Integer(), nullable=False, server_default="0"))
-    op.add_column("deliveries", sa.Column("enriched_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("deliveries", sa.Column("version", sa.Integer(), nullable=False, server_default="1"))
-    op.create_index("ix_deliveries_archived_at", "deliveries", ["archived_at"])
+    _add_column("deliveries", sa.Column("delivery_type", sa.String(), nullable=False, server_default="standard"))
+    _add_column("deliveries", sa.Column("handover_status", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("source_name_snapshot", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("destination_name_snapshot", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("current_location_name", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("placement", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("assigned_driver_uid", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("assigned_driver_name", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("arrived_at", sa.DateTime(timezone=True), nullable=True))
+    _add_column("deliveries", sa.Column("arrived_by_uid", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("arrived_by_name", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True))
+    _add_column("deliveries", sa.Column("completed_by_uid", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("completed_by_name", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("archived_at", sa.DateTime(timezone=True), nullable=True))
+    _add_column("deliveries", sa.Column("moysklad_document_type", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("moysklad_document_id", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("moysklad_document_name", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("company_name", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("item_summary", sa.JSON(), nullable=True))
+    _add_column("deliveries", sa.Column("enrichment_status", sa.String(), nullable=False, server_default="not_requested"))
+    _add_column("deliveries", sa.Column("enrichment_error", sa.String(), nullable=True))
+    _add_column("deliveries", sa.Column("enrichment_attempts", sa.Integer(), nullable=False, server_default="0"))
+    _add_column("deliveries", sa.Column("enriched_at", sa.DateTime(timezone=True), nullable=True))
+    _add_column("deliveries", sa.Column("version", sa.Integer(), nullable=False, server_default="1"))
+    _create_index("ix_deliveries_archived_at", "deliveries", ["archived_at"])
     # Existing legacy completions must start in V2 history, not reappear as
     # active work. Future V1 completions also set these fields in the API.
     op.execute("""
@@ -56,7 +79,7 @@ def upgrade() -> None:
         WHERE status = 'received' AND archived_at IS NULL
     """)
 
-    op.create_table(
+    _create_table(
         "delivery_events",
         sa.Column("id", sa.UUID(as_uuid=False), nullable=False),
         sa.Column("delivery_id", sa.UUID(as_uuid=False), nullable=False),
@@ -77,7 +100,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("actor_uid", "client_event_id", name="uq_delivery_event_actor_client"),
     )
 
-    op.create_table(
+    _create_table(
         "firebase_driver_routes",
         sa.Column("id", sa.UUID(as_uuid=False), nullable=False),
         sa.Column("actor_uid", sa.String(), nullable=False),
@@ -89,10 +112,10 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("actor_uid", "route_date", "warehouse_id", name="uq_firebase_driver_route"),
     )
-    op.create_index("ix_firebase_driver_routes_actor_uid", "firebase_driver_routes", ["actor_uid"])
-    op.create_index("ix_firebase_driver_routes_route_date", "firebase_driver_routes", ["route_date"])
+    _create_index("ix_firebase_driver_routes_actor_uid", "firebase_driver_routes", ["actor_uid"])
+    _create_index("ix_firebase_driver_routes_route_date", "firebase_driver_routes", ["route_date"])
 
-    op.create_table(
+    _create_table(
         "delivery_deletion_audit",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("delivery_number", sa.String(), nullable=False),
@@ -103,7 +126,7 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_delivery_deletion_audit_delivery_number", "delivery_deletion_audit", ["delivery_number"])
+    _create_index("ix_delivery_deletion_audit_delivery_number", "delivery_deletion_audit", ["delivery_number"])
 
 
 def downgrade() -> None:
