@@ -18,8 +18,39 @@ from app.notifications import router as notifications_router, start_watcher, sto
 app = FastAPI(title="Delivery App")
 
 
+def release_stale_delivery_locks() -> int:
+    """End connections stuck idle inside a transaction that locks deliveries.
+
+    Older instances' notification watcher kept one read transaction open for
+    its whole lifetime. During a deploy that old instance is still running,
+    and its lock blocks the migration's ALTER TABLE indefinitely. Only
+    connections idle in a transaction for over a minute and holding a lock on
+    deliveries are ended; normal requests never stay in that state.
+    """
+    if engine.dialect.name != "postgresql":
+        return 0
+    with engine.connect() as connection:
+        ended = connection.execute(text("""
+            SELECT pg_terminate_backend(a.pid)
+            FROM pg_stat_activity a
+            WHERE a.datname = current_database()
+              AND a.pid <> pg_backend_pid()
+              AND a.state = 'idle in transaction'
+              AND a.state_change < now() - interval '60 seconds'
+              AND EXISTS (
+                  SELECT 1 FROM pg_locks l
+                  JOIN pg_class c ON c.oid = l.relation
+                  WHERE l.pid = a.pid AND c.relname = 'deliveries'
+              )
+        """)).fetchall()
+        connection.commit()
+    print(f"[startup] ended {len(ended)} stale idle-in-transaction connection(s)")
+    return len(ended)
+
+
 def run_database_migrations() -> None:
     """Bring PostgreSQL to the code revision before accepting traffic."""
+    release_stale_delivery_locks()
     project_root = Path(__file__).resolve().parent.parent
     config = Config(str(project_root / "alembic.ini"))
     config.set_main_option("script_location", str(project_root / "alembic"))

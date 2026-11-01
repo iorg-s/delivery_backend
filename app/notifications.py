@@ -150,31 +150,30 @@ async def _watcher_loop():
     Background loop that polls the deliveries table for new records since last_check.
     """
     last_check = datetime.now(timezone.utc)
-    db = None
-    try:
+    while not _watcher_stop:
+        # A fresh session per poll: one long-lived session kept a read
+        # transaction (and a lock on deliveries) open forever, which blocked
+        # schema migrations on deploy.
         db = get_db_session()
-        while not _watcher_stop:
-            try:
-                # fetch deliveries created after last_check
-                new_rows: List[Delivery] = db.query(Delivery).filter(
-                    Delivery.created_at > last_check
-                ).order_by(Delivery.created_at.asc()).all()
+        try:
+            # fetch deliveries created after last_check
+            new_rows: List[Delivery] = db.query(Delivery).filter(
+                Delivery.created_at > last_check
+            ).order_by(Delivery.created_at.asc()).all()
 
-                if new_rows:
-                    # update last_check to the newest created_at we processed
-                    last_check = max(d.created_at for d in new_rows if d.created_at) or last_check
+            if new_rows:
+                # update last_check to the newest created_at we processed
+                last_check = max(d.created_at for d in new_rows if d.created_at) or last_check
 
-                    for d in new_rows:
-                        # notify all relevant connected clients
-                        await notify_new_delivery(d, db)
-
-                await asyncio.sleep(POLL_INTERVAL)
-            except Exception:
-                # swallow and loop on — but short backoff to avoid tight loop
-                await asyncio.sleep(POLL_INTERVAL)
-    finally:
-        if db:
+                for d in new_rows:
+                    # notify all relevant connected clients
+                    await notify_new_delivery(d, db)
+        except Exception:
+            # swallow and loop on
+            pass
+        finally:
             db.close()
+        await asyncio.sleep(POLL_INTERVAL)
 
 
 @router.websocket("/ws/notifications")

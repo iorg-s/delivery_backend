@@ -3,6 +3,7 @@ from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
+from sqlalchemy import text
 
 from alembic import context
 from dotenv import load_dotenv
@@ -47,6 +48,10 @@ def run_migrations_online():
     )
 
     with connectable.connect() as connection:
+        if connection.dialect.name == "postgresql":
+            # Fail with a visible error instead of hanging the deploy when
+            # another connection holds a lock on a table being altered.
+            connection.execute(text("SET lock_timeout = '30s'"))
         context.configure(
             connection=connection, target_metadata=target_metadata
         )
