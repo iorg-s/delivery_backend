@@ -236,6 +236,7 @@ def get_deliveries(
                     for c in d.scan_counters
                 } if d.scan_counters else {},
                 "comment": getattr(d, "comment", "") or "",
+                "collector_name": getattr(d, "collector_name", "") or "",
             }
         )
 

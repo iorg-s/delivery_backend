@@ -288,3 +288,35 @@ class WarehouseKeyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArchiveStaleTests(BridgeTestCase):
+    def test_closes_only_deliveries_picked_long_ago(self):
+        self.add_delivery("OLD", expected=2, picked=2, status=DeliveryStatus.picked, minutes_ago=10 * 24 * 60)
+        self.add_delivery("RECENT", expected=2, picked=2, status=DeliveryStatus.picked, minutes_ago=2 * 24 * 60)
+        self.add_delivery("WAITING", status=DeliveryStatus.created, minutes_ago=30 * 24 * 60)
+        headers = {"X-Bridge-Secret": SECRET}
+        dry = self.client.post("/bridge/archive_stale", json={"pickedOlderThanDays": 7, "dryRun": True},
+                               headers=headers).json()
+        self.assertEqual(dry["numbers"], ["OLD"])
+        self.assertEqual(self.counters("OLD")[1], "picked", "a dry run changes nothing")
+        done = self.client.post("/bridge/archive_stale", json={"pickedOlderThanDays": 7},
+                                headers=headers).json()
+        self.assertEqual(done["archived"], 1)
+        _, status, archived = self.counters("OLD")
+        self.assertEqual((status, archived), ("received", True))
+        self.assertEqual(self.counters("RECENT")[1:], ("picked", False))
+        self.assertEqual(self.counters("WAITING")[1:], ("created", False))
+        changes = self.client.get("/bridge/changes", params={"since": utc(5).isoformat()}, headers=headers).json()
+        old = [d for d in changes["deliveries"] if d["deliveryNumber"] == "OLD"]
+        self.assertTrue(old and old[0]["done"], "Firebase learns about the close via /changes")
+
+    def test_collector_name_is_sent_to_firebase(self):
+        delivery_id = self.add_delivery("COLL")
+        db = self.Session()
+        db.query(Delivery).filter(Delivery.id == delivery_id).one().collector_name = "Carp Alexandru"
+        db.commit()
+        db.close()
+        rows = self.client.post("/bridge/lookup", json={"numbers": ["COLL"]},
+                                headers={"X-Bridge-Secret": SECRET}).json()["rows"]
+        self.assertEqual(rows[0]["delivery"]["collectorName"], "Carp Alexandru")

@@ -145,6 +145,7 @@ def delivery_json(delivery: Delivery, warehouses: Dict[str, Warehouse], event_id
         "sourceName": delivery.source_name_snapshot or (source.name if source else ""),
         "destinationName": delivery.destination_name_snapshot or (destination.name if destination else ""),
         "comment": delivery.comment or "",
+        "collectorName": delivery.collector_name or "",
         "placement": delivery.placement or "",
         "counters": counters_of(delivery),
         "currentLocationName": delivery.current_location_name or "",
@@ -315,6 +316,41 @@ def bridge_changes(
 
 class BridgeLookupRequest(BaseModel):
     numbers: List[str] = Field(default_factory=list)
+
+
+class ArchiveStaleIn(BaseModel):
+    pickedOlderThanDays: int = 7
+    dryRun: bool = False
+
+
+@router.post("/archive_stale")
+def bridge_archive_stale(payload: ArchiveStaleIn, db: Session = Depends(get_db)):
+    """Close deliveries picked long ago that no shop ever scanned as received.
+
+    They are marked received (the legacy driver app hides only received rows)
+    and archived, signed as an automatic close. Their updated_at changes, so
+    the next /bridge/changes carries them to Firebase, which archives them too.
+    """
+    days = max(1, min(365, int(payload.pickedOlderThanDays or 7)))
+    cutoff = database_now(db) - timedelta(days=days)
+    rows = db.query(Delivery).filter(
+        Delivery.archived_at.is_(None),
+        Delivery.status == DeliveryStatus.picked,
+        Delivery.updated_at < cutoff,
+    ).with_for_update().all()
+    numbers = [row.delivery_number for row in rows]
+    if not payload.dryRun and rows:
+        now = utcnow()
+        for row in rows:
+            row.status = DeliveryStatus.received
+            row.archived_at = now
+            row.completed_at = now
+            row.completed_by_uid = BRIDGE_ACTOR_UID
+            row.completed_by_name = f"Авто: забрано более {days} дн. назад"
+            bridge_event(db, row, "auto_archived", None,
+                         details={"reason": "picked_older_than_days", "days": days})
+        db.commit()
+    return {"archived": len(numbers), "numbers": numbers[:200], "days": days, "dryRun": payload.dryRun}
 
 
 @router.post("/lookup")

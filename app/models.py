@@ -71,6 +71,8 @@ class Delivery(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     comment = Column(String, nullable=True)
+    # "Кто собирал" from the n8n import.
+    collector_name = Column(String, nullable=True)
     # V2 fields are additive so the original REST API and old Flutter app keep
     # working against the same rows during the staged rollout.
     delivery_type = Column(String, nullable=False, default="standard", server_default="standard")
