@@ -320,3 +320,19 @@ class ArchiveStaleTests(BridgeTestCase):
         rows = self.client.post("/bridge/lookup", json={"numbers": ["COLL"]},
                                 headers={"X-Bridge-Secret": SECRET}).json()["rows"]
         self.assertEqual(rows[0]["delivery"]["collectorName"], "Carp Alexandru")
+
+
+class ArchiveNeverPickedTests(BridgeTestCase):
+    def test_closes_never_picked_only_when_asked(self):
+        self.add_delivery("NEVER", status=DeliveryStatus.created, minutes_ago=10 * 24 * 60)
+        self.add_delivery("STARTED", expected=3, picked=1, status=DeliveryStatus.created, minutes_ago=10 * 24 * 60)
+        self.add_delivery("FRESH", status=DeliveryStatus.created, minutes_ago=2 * 24 * 60)
+        old_caller = self.client.post("/bridge/archive_stale", json={"pickedOlderThanDays": 7}, headers=HEADERS).json()
+        self.assertEqual(old_caller["neverPicked"], 0, "older callers keep the picked-only rule")
+        self.assertEqual(self.counters("NEVER")[1], "created")
+        result = self.client.post("/bridge/archive_stale", json={"pickedOlderThanDays": 7, "createdOlderThanDays": 7},
+                                  headers=HEADERS).json()
+        self.assertEqual((result["neverPicked"], result["numbers"]), (1, ["NEVER"]))
+        self.assertEqual(self.counters("NEVER")[1:], ("received", True))
+        self.assertEqual(self.counters("STARTED")[1:], ("created", False), "a partly scanned delivery stays")
+        self.assertEqual(self.counters("FRESH")[1:], ("created", False))

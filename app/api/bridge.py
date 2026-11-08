@@ -320,6 +320,8 @@ class BridgeLookupRequest(BaseModel):
 
 class ArchiveStaleIn(BaseModel):
     pickedOlderThanDays: int = 7
+    # Never picked by anyone; omitted by older callers, then not applied.
+    createdOlderThanDays: Optional[int] = None
     dryRun: bool = False
 
 
@@ -332,25 +334,42 @@ def bridge_archive_stale(payload: ArchiveStaleIn, db: Session = Depends(get_db))
     the next /bridge/changes carries them to Firebase, which archives them too.
     """
     days = max(1, min(365, int(payload.pickedOlderThanDays or 7)))
-    cutoff = database_now(db) - timedelta(days=days)
-    rows = db.query(Delivery).filter(
+    now_db = database_now(db)
+    picked = db.query(Delivery).filter(
         Delivery.archived_at.is_(None),
         Delivery.status == DeliveryStatus.picked,
-        Delivery.updated_at < cutoff,
+        Delivery.updated_at < now_db - timedelta(days=days),
     ).with_for_update().all()
-    numbers = [row.delivery_number for row in rows]
-    if not payload.dryRun and rows:
+    never: List[Delivery] = []
+    created_days = None
+    if payload.createdOlderThanDays:
+        created_days = max(1, min(365, int(payload.createdOlderThanDays)))
+        candidates = db.query(Delivery).options(selectinload(Delivery.scan_counters)).filter(
+            Delivery.archived_at.is_(None),
+            Delivery.status.in_([DeliveryStatus.created, DeliveryStatus.ready_to_pick]),
+            Delivery.updated_at < now_db - timedelta(days=created_days),
+        ).with_for_update().all()
+        # Only rows nobody scanned at all.
+        never = [row for row in candidates if not any(counters_of(row).values())]
+    if not payload.dryRun and (picked or never):
         now = utcnow()
-        for row in rows:
-            row.status = DeliveryStatus.received
-            row.archived_at = now
-            row.completed_at = now
-            row.completed_by_uid = BRIDGE_ACTOR_UID
-            row.completed_by_name = f"Авто: забрано более {days} дн. назад"
-            bridge_event(db, row, "auto_archived", None,
-                         details={"reason": "picked_older_than_days", "days": days})
+        for rows, label, reason, period in (
+            (picked, f"Авто: забрано более {days} дн. назад", "picked_older_than_days", days),
+            (never, f"Авто: не забрано {created_days} дн.", "never_picked_older_than_days", created_days),
+        ):
+            for row in rows:
+                row.status = DeliveryStatus.received
+                row.archived_at = now
+                row.completed_at = now
+                row.completed_by_uid = BRIDGE_ACTOR_UID
+                row.completed_by_name = label
+                bridge_event(db, row, "auto_archived", None, details={"reason": reason, "days": period})
         db.commit()
-    return {"archived": len(numbers), "numbers": numbers[:200], "days": days, "dryRun": payload.dryRun}
+    numbers = [row.delivery_number for row in picked]
+    never_numbers = [row.delivery_number for row in never]
+    return {"archived": len(numbers) + len(never_numbers), "picked": len(numbers),
+            "neverPicked": len(never_numbers), "numbers": (numbers + never_numbers)[:200],
+            "days": days, "createdDays": created_days, "dryRun": payload.dryRun}
 
 
 @router.post("/lookup")
