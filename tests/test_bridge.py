@@ -376,3 +376,12 @@ class EmbroideryBridgeTests(BridgeTestCase):
         self.assertEqual(rows["E-OUT"][0], "in")
         again = self.client.post("/bridge/embroidery", json=body, headers=HEADERS).json()["items"]
         self.assertEqual([r["result"] for r in again], ["unchanged", "unchanged", "unchanged"])
+
+
+class EmbroideryHistoryTests(EmbroideryBridgeTests):
+    def test_recent_returns_are_listed_on_request(self):
+        plain = self.client.get("/bridge/embroidery", headers=HEADERS).json()
+        self.assertNotIn("returned", plain)
+        with_history = self.client.get("/bridge/embroidery", params={"returnedDays": 30}, headers=HEADERS).json()
+        self.assertEqual([r["deliveryNumber"] for r in with_history["returned"]], ["E-BACK"])
+        self.assertTrue(with_history["returned"][0]["at"])

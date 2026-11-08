@@ -323,11 +323,22 @@ def bridge_changes(
 # status 'out' | 'in', added_at = time of the last change)
 # ---------------------------------------------------------------------------
 
+def as_datetime(value: Any) -> Optional[datetime]:
+    """Raw SQL may return timestamps as text (e.g. SQLite)."""
+    if isinstance(value, datetime) or value is None:
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
 def embroidery_table_exists(db: Session) -> bool:
     return sa_inspect(db.get_bind()).has_table("required_deliveries")
 
 
-def embroidery_rows(db: Session, since: Optional[datetime] = None, only_out: bool = False) -> List[Dict[str, Any]]:
+def embroidery_rows(db: Session, since: Optional[datetime] = None, only_out: bool = False,
+                    status: Optional[str] = None) -> List[Dict[str, Any]]:
     if not embroidery_table_exists(db):
         return []
     conditions = []
@@ -337,6 +348,9 @@ def embroidery_rows(db: Session, since: Optional[datetime] = None, only_out: boo
         params["since"] = since
     if only_out:
         conditions.append("status = 'out'")
+    if status:
+        conditions.append("status = :status")
+        params["status"] = status
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = db.execute(text(
         "SELECT delivery_id, expected_packages, status, added_at FROM required_deliveries"
@@ -346,14 +360,20 @@ def embroidery_rows(db: Session, since: Optional[datetime] = None, only_out: boo
         "deliveryNumber": str(row.delivery_id).strip(),
         "expectedPackages": max(1, int(row.expected_packages or 1)),
         "status": str(getattr(row.status, "value", row.status)).strip().lower(),
-        "at": iso(row.added_at if isinstance(row.added_at, datetime) else None),
+        "at": iso(as_datetime(row.added_at)),
     } for row in rows if str(row.delivery_id).strip()]
 
 
 @router.get("/embroidery")
-def bridge_embroidery_list(db: Session = Depends(get_db)):
-    """Everything currently at the contractor, for Firebase's daily check."""
-    return {"items": embroidery_rows(db, only_out=True)}
+def bridge_embroidery_list(returnedDays: int = 0, db: Session = Depends(get_db)):
+    """Everything currently at the contractor, for Firebase's daily check;
+    with returnedDays, also pieces returned within that many days (history
+    for the managers' embroidery view)."""
+    result: Dict[str, Any] = {"items": embroidery_rows(db, only_out=True)}
+    if returnedDays > 0:
+        since = database_now(db) - timedelta(days=min(returnedDays, 90))
+        result["returned"] = embroidery_rows(db, since=since, status="in")
+    return result
 
 
 class EmbroideryIn(BaseModel):
