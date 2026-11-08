@@ -336,3 +336,43 @@ class ArchiveNeverPickedTests(BridgeTestCase):
         self.assertEqual(self.counters("NEVER")[1:], ("received", True))
         self.assertEqual(self.counters("STARTED")[1:], ("created", False), "a partly scanned delivery stays")
         self.assertEqual(self.counters("FRESH")[1:], ("created", False))
+
+
+class EmbroideryBridgeTests(BridgeTestCase):
+    def setUp(self):
+        super().setUp()
+        db = self.Session()
+        db.execute(bridge.text(
+            "CREATE TABLE required_deliveries (id INTEGER PRIMARY KEY AUTOINCREMENT, delivery_id TEXT,"
+            " expected_packages INTEGER, status TEXT, added_at TIMESTAMP)"))
+        db.execute(bridge.text(
+            "INSERT INTO required_deliveries (delivery_id, expected_packages, status, added_at) VALUES"
+            " ('E-OUT', 2, 'out', :recent), ('E-BACK', 1, 'in', :recent), ('E-OLD', 3, 'out', :old)"),
+            {"recent": utc(1).replace(tzinfo=None), "old": utc(60 * 24).replace(tzinfo=None)})
+        db.commit()
+        db.close()
+
+    def test_changes_carry_recent_rows_and_full_lists_those_still_out(self):
+        recent = self.client.get("/bridge/changes", params={"since": utc(10).isoformat()}, headers=HEADERS).json()
+        self.assertEqual(sorted((e["deliveryNumber"], e["status"]) for e in recent["embroidery"]),
+                         [("E-BACK", "in"), ("E-OUT", "out")])
+        full = self.client.get("/bridge/embroidery", headers=HEADERS).json()["items"]
+        self.assertEqual(sorted(e["deliveryNumber"] for e in full), ["E-OLD", "E-OUT"])
+        self.assertEqual([e["expectedPackages"] for e in full if e["deliveryNumber"] == "E-OLD"], [3])
+
+    def test_flutter_orders_handovers_are_written_like_the_legacy_app(self):
+        body = {"items": [
+            {"deliveryNumber": "E-NEW", "status": "out", "expectedPackages": 4},
+            {"deliveryNumber": "E-OUT", "status": "in"},
+            {"deliveryNumber": "E-OLD", "status": "out"},
+        ]}
+        results = self.client.post("/bridge/embroidery", json=body, headers=HEADERS).json()["items"]
+        self.assertEqual([r["result"] for r in results], ["applied", "applied", "unchanged"])
+        db = self.Session()
+        rows = {r.delivery_id: (r.status, r.expected_packages) for r in db.execute(bridge.text(
+            "SELECT delivery_id, status, expected_packages FROM required_deliveries")).fetchall()}
+        db.close()
+        self.assertEqual(rows["E-NEW"], ("out", 4))
+        self.assertEqual(rows["E-OUT"][0], "in")
+        again = self.client.post("/bridge/embroidery", json=body, headers=HEADERS).json()["items"]
+        self.assertEqual([r["result"] for r in again], ["unchanged", "unchanged", "unchanged"])

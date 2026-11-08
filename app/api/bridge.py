@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect as sa_inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -311,7 +311,93 @@ def bridge_changes(
         "deliveries": [delivery_json(row, warehouses, ids_by_delivery.get(row.id, [])) for row in deliveries],
         "events": events,
         "deletions": deletions,
+        # Embroidery handovers of the legacy app (required_deliveries): rows
+        # changed in this window, or every row still at the contractor on a
+        # full read.
+        "embroidery": embroidery_rows(db, since=None if full else lower, only_out=full),
     }
+
+
+# ---------------------------------------------------------------------------
+# Embroidery (legacy table required_deliveries: delivery_id, expected_packages,
+# status 'out' | 'in', added_at = time of the last change)
+# ---------------------------------------------------------------------------
+
+def embroidery_table_exists(db: Session) -> bool:
+    return sa_inspect(db.get_bind()).has_table("required_deliveries")
+
+
+def embroidery_rows(db: Session, since: Optional[datetime] = None, only_out: bool = False) -> List[Dict[str, Any]]:
+    if not embroidery_table_exists(db):
+        return []
+    conditions = []
+    params: Dict[str, Any] = {}
+    if since is not None:
+        conditions.append("added_at >= :since")
+        params["since"] = since
+    if only_out:
+        conditions.append("status = 'out'")
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    rows = db.execute(text(
+        "SELECT delivery_id, expected_packages, status, added_at FROM required_deliveries"
+        f"{where} ORDER BY added_at"
+    ), params).fetchall()
+    return [{
+        "deliveryNumber": str(row.delivery_id).strip(),
+        "expectedPackages": max(1, int(row.expected_packages or 1)),
+        "status": str(getattr(row.status, "value", row.status)).strip().lower(),
+        "at": iso(row.added_at if isinstance(row.added_at, datetime) else None),
+    } for row in rows if str(row.delivery_id).strip()]
+
+
+@router.get("/embroidery")
+def bridge_embroidery_list(db: Session = Depends(get_db)):
+    """Everything currently at the contractor, for Firebase's daily check."""
+    return {"items": embroidery_rows(db, only_out=True)}
+
+
+class EmbroideryIn(BaseModel):
+    deliveryNumber: str
+    status: Literal["out", "in"]
+    expectedPackages: int = 1
+
+
+class EmbroideryBatchIn(BaseModel):
+    items: List[EmbroideryIn] = Field(default_factory=list)
+
+
+@router.post("/embroidery")
+def bridge_embroidery_apply(payload: EmbroideryBatchIn, db: Session = Depends(get_db)):
+    """Embroidery handed out / returned in flutter_orders, written like the
+    legacy app's /deliveries/required_deliveries/scan. State, not counters:
+    repeating an item is harmless."""
+    if not embroidery_table_exists(db):
+        raise HTTPException(status_code=503, detail="required_deliveries table missing")
+    results = []
+    for item in payload.items:
+        number = item.deliveryNumber.strip()
+        if not number:
+            results.append({"deliveryNumber": number, "result": "error"})
+            continue
+        existing = db.execute(text(
+            "SELECT id, status FROM required_deliveries WHERE delivery_id = :number"
+        ), {"number": number}).first()
+        if existing and str(getattr(existing.status, "value", existing.status)).strip().lower() == item.status:
+            results.append({"deliveryNumber": number, "result": "unchanged"})
+            continue
+        if existing:
+            db.execute(text(
+                "UPDATE required_deliveries SET status = :status, added_at = CURRENT_TIMESTAMP"
+                " WHERE delivery_id = :number"
+            ), {"status": item.status, "number": number})
+        else:
+            db.execute(text(
+                "INSERT INTO required_deliveries (delivery_id, expected_packages, status, added_at)"
+                " VALUES (:number, :places, :status, CURRENT_TIMESTAMP)"
+            ), {"number": number, "places": max(1, min(999, item.expectedPackages)), "status": item.status})
+        results.append({"deliveryNumber": number, "result": "applied"})
+    db.commit()
+    return {"items": results}
 
 
 class BridgeLookupRequest(BaseModel):
